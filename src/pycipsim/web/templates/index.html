@@ -252,6 +252,27 @@
                         </details>
                       {% endif %}
                     </td>
+                    <td class="insert-cell">
+                      {% if not is_running %}
+                        <details class="add-signal">
+                          <summary class="add-summary" title="Add signal after">+</summary>
+                          <form method="post" action="/configs/{{ current.name }}/assemblies/{{ assembly.assembly_id }}/signals/add">
+                            <input type="hidden" name="position" value="after" />
+                            <input type="hidden" name="relative_signal" value="{{ signal.name }}" />
+                            <label>Signal Name
+                              <input type="text" name="new_name" required />
+                            </label>
+                            <label>Offset
+                              <input type="number" name="offset" required />
+                            </label>
+                            <label>Type
+                              <input type="text" name="signal_type" required />
+                            </label>
+                            <button type="submit">Add Signal</button>
+                          </form>
+                        </details>
+                      {% endif %}
+                    </td>
                   </tr>
                 {% endfor %}
                 {% if not assembly.signals %}
