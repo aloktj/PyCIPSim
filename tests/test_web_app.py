@@ -68,8 +68,8 @@ def test_type_update_blocked_when_running(store: ConfigurationStore) -> None:
     client = TestClient(app)
 
     response = client.post(
-        "/configs/WebConfig/assemblies/200/signals/SigA/type",
-        data={"signal_type": "INT"},
+        "/configs/WebConfig/assemblies/200/signals/SigA/details",
+        data={"new_name": "SigA", "offset": "0", "signal_type": "INT"},
         follow_redirects=False,
     )
     assert response.status_code == 303
