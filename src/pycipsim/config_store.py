@@ -63,6 +63,12 @@ class ConfigurationStore:
     ) -> SignalDefinition:
         with self._lock:
             configuration = self.get(name)
+            assembly = configuration.find_assembly(assembly_id)
+            direction = (assembly.direction or "").lower()
+            if direction in {"input", "in"}:
+                raise ConfigurationError(
+                    f"Cannot modify values for input assembly '{assembly.name}'."
+                )
             signal = configuration.find_signal(assembly_id, signal_name)
             signal.value = value
             self._persist()

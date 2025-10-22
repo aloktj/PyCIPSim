@@ -147,6 +147,7 @@
 
           {% for assembly in current.assemblies %}
             <h3>Assembly {{ assembly.name }} (#{{ assembly.assembly_id }})</h3>
+            {% set is_input_assembly = assembly.direction and assembly.direction|lower in ['input', 'in'] %}
             {% if not is_running %}
               <details class="add-signal">
                 <summary class="add-summary" title="Add signal at start">+</summary>
@@ -215,11 +216,41 @@
                       {% endif %}
                     </td>
                     <td class="signal-actions">
-                      <form method="post" action="/configs/{{ current.name }}/assemblies/{{ assembly.assembly_id }}/signals/{{ signal.name }}/value">
-                        <input type="text" name="value" value="{{ signal.value or '' }}" />
-                        <button type="submit" name="action" value="set">Set</button>
-                        <button type="submit" name="action" value="clear">Clear</button>
-                      </form>
+                      {% if is_input_assembly %}
+                        <input
+                          type="text"
+                          value="{{ signal.value if signal.value is not none else 0 }}"
+                          readonly
+                          disabled
+                        />
+                      {% else %}
+                        <form method="post" action="/configs/{{ current.name }}/assemblies/{{ assembly.assembly_id }}/signals/{{ signal.name }}/value">
+                          <input type="text" name="value" value="{{ signal.value or '' }}" />
+                          <button type="submit" name="action" value="set">Set</button>
+                          <button type="submit" name="action" value="clear">Clear</button>
+                        </form>
+                      {% endif %}
+                    </td>
+                    <td class="insert-cell">
+                      {% if not is_running %}
+                        <details class="add-signal">
+                          <summary class="add-summary" title="Add signal after">+</summary>
+                          <form method="post" action="/configs/{{ current.name }}/assemblies/{{ assembly.assembly_id }}/signals/add">
+                            <input type="hidden" name="position" value="after" />
+                            <input type="hidden" name="relative_signal" value="{{ signal.name }}" />
+                            <label>Signal Name
+                              <input type="text" name="new_name" required />
+                            </label>
+                            <label>Offset
+                              <input type="number" name="offset" required />
+                            </label>
+                            <label>Type
+                              <input type="text" name="signal_type" required />
+                            </label>
+                            <button type="submit">Add Signal</button>
+                          </form>
+                        </details>
+                      {% endif %}
                     </td>
                     <td class="insert-cell">
                       {% if not is_running %}

@@ -76,3 +76,23 @@ def test_type_update_blocked_when_running(store: ConfigurationStore) -> None:
     assert "error=" in response.headers["location"]
     config_after = store.get("WebConfig")
     assert config_after.find_signal(200, "SigA").signal_type == "BOOL"
+
+
+def test_value_update_rejected_for_input_assembly(store: ConfigurationStore) -> None:
+    manager = SimulatorManager()
+    payload = _scenario_payload()
+    payload["assemblies"][0]["direction"] = "input"
+    config = SimulatorConfiguration.from_dict(payload)
+    store.upsert(config)
+    app = get_app(store=store, manager=manager)
+    client = TestClient(app)
+
+    response = client.post(
+        "/configs/WebConfig/assemblies/200/signals/SigA/value",
+        data={"value": "1", "action": "set"},
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+    assert "error=" in response.headers["location"]
+    config_after = store.get("WebConfig")
+    assert config_after.find_signal(200, "SigA").value == "0"
