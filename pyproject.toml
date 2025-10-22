@@ -22,11 +22,14 @@ dev = [
     "mypy>=1.8",
 ]
 pycomm3 = [
-    "pycomm3>=1.3",
+    "pycomm3>=1.2.14",
 ]
 
 [project.urls]
 Homepage = "https://example.com/pycipsim"
+
+[project.scripts]
+pycipsim = "pycipsim.cli:cli"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
