@@ -1,3 +1,4 @@
+import time
 from pathlib import Path
 import sys
 
@@ -5,8 +6,18 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from pycipsim.device import DeviceProfile, ServiceRequest, ServiceResponse
-from pycipsim.engine import SimulationScenario, SimulationStep
+from pycipsim.device import (
+    DeviceProfile,
+    ServiceRequest,
+    ServiceResponse,
+    delay_response_fault,
+)
+from pycipsim.engine import (
+    ScenarioExecutionError,
+    SimulationScenario,
+    SimulationStep,
+    run_scenarios_parallel,
+)
 from pycipsim.session import CIPSession, SessionConfig, TransportError
 
 
@@ -85,3 +96,51 @@ def test_allow_external_flag_permits_connections():
     response = session.send(ServiceRequest(service_code="PING", tag_path="Tag", payload=b"hi"))
     assert response.status == "SUCCESS"
     session.disconnect()
+
+
+def test_parallel_execution_runs_scenarios_concurrently():
+    profile = DeviceProfile(
+        name="DelayedEcho",
+        services=dict(DeviceProfile.echo_profile().services),
+        faults=[delay_response_fault("delay", 200)],
+    )
+    config = SessionConfig()
+    steps = [
+        SimulationStep(
+            request=ServiceRequest(service_code="ECHO", tag_path="Tag", payload=b"data"),
+            expected_status="SUCCESS",
+        )
+    ]
+    scenarios = {
+        "first": SimulationScenario(CIPSession(config=config, profile=profile), steps=steps),
+        "second": SimulationScenario(CIPSession(config=config, profile=profile), steps=steps),
+    }
+
+    start = time.perf_counter()
+    results = run_scenarios_parallel(scenarios, max_workers=2)
+    elapsed = time.perf_counter() - start
+
+    assert set(results.keys()) == {"first", "second"}
+    assert all(result.success for result in results.values())
+    assert elapsed < 0.35
+
+
+def test_parallel_execution_reports_failures():
+    config = SessionConfig(ip_address="10.10.10.10")
+    bad_session = CIPSession(config=config)
+    scenarios = {
+        "bad": SimulationScenario(
+            session=bad_session,
+            steps=[
+                SimulationStep(
+                    request=ServiceRequest(service_code="PING", tag_path="Tag"),
+                    expected_status="SUCCESS",
+                )
+            ],
+        )
+    }
+
+    with pytest.raises(ScenarioExecutionError) as excinfo:
+        run_scenarios_parallel(scenarios, max_workers=1)
+
+    assert "bad" in excinfo.value.failures

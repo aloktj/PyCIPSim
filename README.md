@@ -72,6 +72,9 @@ pip install -e .[pycomm3]
    pycipsim list-profiles
    ```
 
+Repeat `--scenario` to execute several definitions in one run. Provide `--workers` to fan them out across threads for faster
+feedback while iterating on multiple behaviours.
+
 When `pycomm3` is available you can point the same command at live hardware with `--ip`, `--port`, and `--slot` overrides. Use
 `--allowed-host` to extend the default whitelist or `--allow-external` (with caution) to bypass it, and provide credential
 variable names via `--username-env` / `--password-env` so secrets stay out of config files. The CLI emits structured JSON
@@ -98,6 +101,20 @@ Scenarios are JSON arrays with each element describing a single request/expectat
 
 The CLI loader mirrors this structure and converts payload strings to bytes internally. Scenario execution halts on the first
 failure by default, but `--no-halt` enables full-run auditing.
+
+### Batch & Parallel Execution
+
+PyCIPSim now supports multi-scenario runs so that development and regression testing can happen in parallel:
+
+```bash
+pycipsim run \
+  --scenario scenarios/echo.json \
+  --scenario scenarios/counter.json \
+  --workers 2
+```
+
+Each scenario spins up an isolated `CIPSession` and the CLI renders a summary table along with aggregate latency and status
+metrics. Failures across any worker surface as a non-zero exit status, keeping CI pipelines honest.
 
 ### Device Profiles
 
@@ -127,6 +144,10 @@ Automated testing covers scenario execution with simulated devices and safety gu
 ```bash
 pytest
 ```
+
+To mirror the CLI's batch behaviour inside Python code, call `pycipsim.run_scenarios_parallel(...)` with a mapping of scenario
+names to `SimulationScenario` instances. This helper manages session lifecycles and aggregates exceptions, making it easy to
+smoke-test multiple device behaviours while feature development is underway.
 
 Future milestones will layer in additional checks to match the SRS quality targets:
 

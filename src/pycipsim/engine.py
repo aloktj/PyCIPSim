@@ -3,9 +3,10 @@ from __future__ import annotations
 
 import json
 import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional
+from typing import Dict, Iterable, List, Mapping, Optional
 
 from .device import ServiceRequest, ServiceResponse
 from .session import CIPSession
@@ -169,3 +170,69 @@ def load_steps_from_json(path: Path) -> List[SimulationStep]:
             )
         )
     return steps
+
+
+class ScenarioExecutionError(RuntimeError):
+    """Raised when one or more scenarios fail during parallel execution."""
+
+    def __init__(self, failures: Mapping[str, Exception]):
+        message = "; ".join(f"{name}: {error}" for name, error in failures.items())
+        super().__init__(
+            "One or more scenarios failed during execution: " + message
+            if message
+            else "One or more scenarios failed during execution"
+        )
+        self.failures: Mapping[str, Exception] = failures
+
+
+def _execute_with_lifecycle(scenario: SimulationScenario) -> SimulationResult:
+    """Run a scenario while managing its session lifecycle."""
+
+    with scenario.session.lifecycle():
+        return scenario.execute()
+
+
+def run_scenarios_parallel(
+    scenarios: Mapping[str, SimulationScenario],
+    max_workers: Optional[int] = None,
+) -> Dict[str, SimulationResult]:
+    """Execute multiple scenarios concurrently.
+
+    Args:
+        scenarios: Mapping from a scenario identifier to a ``SimulationScenario``
+            instance that should be executed. Each scenario must own its own
+            ``CIPSession`` instance to avoid cross-thread contention.
+        max_workers: Optional explicit worker count. When ``None`` a worker will
+            be created for each scenario, matching ``ThreadPoolExecutor``
+            semantics.
+
+    Returns:
+        A mapping of scenario identifier to ``SimulationResult``.
+
+    Raises:
+        ScenarioExecutionError: if any scenario raises an exception. The
+            underlying exceptions are available in ``failures``.
+    """
+
+    if not scenarios:
+        return {}
+
+    results: Dict[str, SimulationResult] = {}
+    failures: Dict[str, Exception] = {}
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        future_mapping = {
+            executor.submit(_execute_with_lifecycle, scenario): name
+            for name, scenario in scenarios.items()
+        }
+        for future in as_completed(future_mapping):
+            name = future_mapping[future]
+            try:
+                results[name] = future.result()
+            except Exception as exc:
+                failures[name] = exc
+
+    if failures:
+        raise ScenarioExecutionError(failures)
+
+    return results
