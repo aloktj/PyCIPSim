@@ -23,3 +23,23 @@ def test_scaffold_creates_nested_directories(tmp_path):
     assert payload
     first_step = payload[0]
     assert first_step["request"]["service_code"] == "ECHO"
+
+
+def test_benchmark_meets_target(tmp_path):
+    runner = CliRunner()
+
+    result = runner.invoke(
+        cli,
+        [
+            "benchmark",
+            "--messages",
+            "10",
+            "--warmup",
+            "0",
+            "--target-throughput",
+            "5",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert "Benchmark Summary" in result.output
