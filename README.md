@@ -20,6 +20,20 @@ without dedicated hardware. The implementation mirrors the major capabilities de
 
 All modules log through `pycipsim.logging_config` to honour the observability requirements in the SRS.
 
+## Current Status
+
+- ✅ Editable install exposes the `pycipsim` console script so CLI commands are available immediately after setup.
+- ✅ Optional `[pycomm3]` extra now resolves against the published `pycomm3==1.2.14` release, so hardware connectivity installs succeed on fresh environments.
+- ✅ `pycipsim scaffold` creates intermediate directories before writing scenario templates, unblocking first-run usage.
+- ✅ `pycipsim benchmark` validates the ≥100 msg/s performance requirement called out in SRS §5.1 when run against bundled profiles.
+
+## Next Steps
+
+1. Add integration coverage that exercises real `pycomm3` sessions when hardware or emulators are available.
+2. Implement UDP transport adapters to satisfy the communications interface expectations in SRS §4.5.
+3. Expand CLI regression tests to cover `run` report generation and failure-path messaging.
+4. Document advanced scenario patterns (loops, conditional expectations) to guide complex simulation authoring.
+
 ## Repository Layout
 
 ```
@@ -70,6 +84,11 @@ pip install -e .[pycomm3]
 3. Inspect the bundled device profiles:
    ```bash
    pycipsim list-profiles
+   ```
+
+4. Validate throughput requirements using the benchmark harness:
+   ```bash
+   pycipsim benchmark --messages 500 --target-throughput 100
    ```
 
 Repeat `--scenario` to execute several definitions in one run. Provide `--workers` to fan them out across threads for faster
@@ -153,8 +172,7 @@ Future milestones will layer in additional checks to match the SRS quality targe
 
 - Static analysis (`mypy`, `ruff`) and formatting hooks via `pre-commit`.
 - Integration tests targeting containerised PLC simulators once transport adapters are extended.
-- Performance harnesses to validate the ≥100 message-per-second throughput in SRS §5.1 and to expand the runtime metrics emitted
-  by `SimulationResult`.
+- Expanded reporting for benchmark runs (percentiles, histograms) so long-term throughput trends remain visible alongside the pass/fail gate enforced by `pycipsim benchmark`.
 
 ## Roadmap Highlights
 
