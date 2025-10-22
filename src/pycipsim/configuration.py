@@ -75,6 +75,14 @@ class AssemblyDefinition:
 
         return list(self.signals)
 
+    def find_signal_index(self, signal_name: str) -> int:
+        for index, signal in enumerate(self.signals):
+            if signal.name == signal_name:
+                return index
+        raise ConfigurationError(
+            f"Signal '{signal_name}' not found in assembly '{self.name}' ({self.assembly_id})."
+        )
+
 
 @dataclass(slots=True)
 class SimulatorConfiguration:
@@ -127,15 +135,21 @@ class SimulatorConfiguration:
             "assemblies": [assembly.to_dict() for assembly in self.assemblies],
         }
 
+    def find_assembly(self, assembly_id: int) -> AssemblyDefinition:
+        for assembly in self.assemblies:
+            if assembly.assembly_id == assembly_id:
+                return assembly
+        raise ConfigurationError(
+            f"Assembly '{assembly_id}' not found for configuration '{self.name}'."
+        )
+
     def find_signal(self, assembly_id: int, signal_name: str) -> SignalDefinition:
         """Locate a signal by assembly and name."""
 
-        for assembly in self.assemblies:
-            if assembly.assembly_id != assembly_id:
-                continue
-            for signal in assembly.signals:
-                if signal.name == signal_name:
-                    return signal
+        assembly = self.find_assembly(assembly_id)
+        for signal in assembly.signals:
+            if signal.name == signal_name:
+                return signal
         raise ConfigurationError(
             f"Signal '{signal_name}' not found in assembly {assembly_id} for configuration '{self.name}'."
         )
