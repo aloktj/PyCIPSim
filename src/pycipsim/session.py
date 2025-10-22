@@ -2,10 +2,12 @@
 from __future__ import annotations
 
 import contextlib
+import copy
 import logging
+import os
 import time
 from dataclasses import dataclass, field
-from typing import Any, Dict, Optional, Protocol
+from typing import Any, Dict, Iterable, List, Optional, Protocol, Sequence, Tuple
 
 from .device import DeviceProfile, ServiceRequest, ServiceResponse
 
@@ -39,6 +41,23 @@ class SessionConfig:
     retries: int = 3
     slot: Optional[int] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
+    allowed_hosts: Sequence[str] = field(
+        default_factory=lambda: ("127.0.0.1", "localhost")
+    )
+    allow_external: bool = False
+    username_env_var: Optional[str] = None
+    password_env_var: Optional[str] = None
+
+    def resolve_credentials(self) -> Dict[str, Optional[str]]:
+        """Load credentials from environment variables when configured."""
+
+        username = (
+            os.getenv(self.username_env_var) if self.username_env_var else None
+        )
+        password = (
+            os.getenv(self.password_env_var) if self.password_env_var else None
+        )
+        return {"username": username, "password": password}
 
 
 class SimulatedTransport:
@@ -83,7 +102,16 @@ class PyComm3Transport:
         address = config.ip_address
         if config.slot is not None:
             address = f"{address}/{config.slot}"
-        self._driver = LogixDriver(address, port=config.port, timeout=config.timeout)
+        credentials = config.resolve_credentials()
+        driver_kwargs = {
+            "port": config.port,
+            "timeout": config.timeout,
+        }
+        if credentials.get("username"):
+            driver_kwargs["username"] = credentials["username"]
+        if credentials.get("password"):
+            driver_kwargs["password"] = credentials["password"]
+        self._driver = LogixDriver(address, **driver_kwargs)
 
     def connect(self) -> None:  # pragma: no cover - requires hardware
         self._driver.open()
@@ -119,12 +147,18 @@ class CIPSession:
         self._transport = transport
         self._profile = profile
         self._last_response: Optional[ServiceResponse] = None
+        self._history: List[Tuple[ServiceRequest, ServiceResponse]] = []
 
     @property
     def last_response(self) -> Optional[ServiceResponse]:
         """Return the most recent response."""
 
         return self._last_response
+
+    def history(self) -> List[Tuple[ServiceRequest, ServiceResponse]]:
+        """Return a copy of the request/response history."""
+
+        return list(self._history)
 
     def _ensure_transport(self) -> Transport:
         if self._transport is not None:
@@ -135,10 +169,35 @@ class CIPSession:
             self._transport = PyComm3Transport(self.config)
         return self._transport
 
+    def _resolve_allowed_hosts(self) -> Iterable[str]:
+        hosts: List[str] = list(self.config.allowed_hosts)
+        env_hosts = os.getenv("PYCIPSIM_ALLOWED_HOSTS")
+        if env_hosts:
+            hosts.extend(h.strip() for h in env_hosts.split(",") if h.strip())
+        return hosts
+
+    def _validate_target(self) -> None:
+        if self._profile is not None:
+            return
+        if self.config.allow_external or os.getenv("PYCIPSIM_ALLOW_EXTERNAL") == "1":
+            _LOGGER.warning(
+                "External connections enabled for %s; ensure compliance with safety policies.",
+                self.config.ip_address,
+            )
+            return
+        allowed_hosts = set(self._resolve_allowed_hosts())
+        if self.config.ip_address not in allowed_hosts:
+            raise TransportError(
+                "Target host '%s' is not in the allowed hosts list. Set allow_external to True "
+                "or update allowed_hosts to proceed."
+                % self.config.ip_address
+            )
+
     @contextlib.contextmanager
     def lifecycle(self) -> "CIPSession":
         """Context manager that opens and closes the session."""
 
+        self._validate_target()
         transport = self._ensure_transport()
         start = time.perf_counter()
         transport.connect()
@@ -157,7 +216,9 @@ class CIPSession:
     def connect(self) -> None:
         """Open the session without a context manager."""
 
-        self._ensure_transport().connect()
+        self._validate_target()
+        transport = self._ensure_transport()
+        transport.connect()
 
     def disconnect(self) -> None:
         """Close the session."""
@@ -184,6 +245,7 @@ class CIPSession:
                     duration,
                 )
                 self._last_response = response
+                self._history.append((copy.deepcopy(request), copy.deepcopy(response)))
                 return response
             except Exception as exc:  # pragma: no cover - exceptional flow
                 last_error = exc

@@ -37,6 +37,27 @@ def cli(verbose: bool) -> None:
 @click.option("--report", type=click.Path(dir_okay=False), help="Where to write the JSON report.")
 @click.option("--halt/--no-halt", default=True, show_default=True, help="Stop on first failure.")
 @click.option("--slot", type=int, help="Slot identifier when targeting chassis-based PLCs.")
+@click.option(
+    "--allowed-host",
+    "allowed_hosts",
+    multiple=True,
+    help="Additional hostnames or IPs to whitelist for live sessions.",
+)
+@click.option(
+    "--allow-external",
+    is_flag=True,
+    help="Bypass the safety whitelist and allow external connections.",
+)
+@click.option(
+    "--username-env",
+    type=str,
+    help="Environment variable containing a CIP username for pycomm3 sessions.",
+)
+@click.option(
+    "--password-env",
+    type=str,
+    help="Environment variable containing a CIP password for pycomm3 sessions.",
+)
 def run(
     profile: Optional[str],
     profile_file: Optional[str],
@@ -48,12 +69,35 @@ def run(
     report: Optional[str],
     halt: bool,
     slot: Optional[int],
+    allowed_hosts: tuple[str, ...],
+    allow_external: bool,
+    username_env: Optional[str],
+    password_env: Optional[str],
 ) -> None:
     """Execute a simulation scenario."""
 
     profile_obj = _load_profile(profile, profile_file)
-    config = SessionConfig(ip_address=ip, port=port, retries=retries, timeout=timeout, slot=slot)
+    allowed = list(SessionConfig().allowed_hosts)
+    if allowed_hosts:
+        allowed.extend(list(allowed_hosts))
+    allowed = list(dict.fromkeys(allowed))
+    config = SessionConfig(
+        ip_address=ip,
+        port=port,
+        retries=retries,
+        timeout=timeout,
+        slot=slot,
+        allowed_hosts=tuple(allowed),
+        allow_external=allow_external,
+        username_env_var=username_env,
+        password_env_var=password_env,
+    )
     session = CIPSession(config=config, profile=profile_obj)
+
+    if allow_external:
+        console.print(
+            "[yellow]External connections explicitly enabled. Confirm the target network is approved before proceeding.[/yellow]"
+        )
 
     steps = _load_scenario(Path(scenario))
     scenario_runner = SimulationScenario(session=session, steps=steps, halt_on_failure=halt)
@@ -62,6 +106,24 @@ def run(
         result = scenario_runner.execute()
 
     console.print(f"Simulation success: {result.success}")
+    metrics_table = Table(title="Simulation Metrics")
+    metrics_table.add_column("Metric")
+    metrics_table.add_column("Value")
+    metrics = result.metrics
+    metrics_table.add_row("Total steps", str(metrics.total_steps))
+    metrics_table.add_row("Completed steps", str(metrics.completed_steps))
+    metrics_table.add_row("Successes", str(metrics.success_count))
+    metrics_table.add_row("Failures", str(metrics.failure_count))
+    metrics_table.add_row("Average round trip (ms)", f"{metrics.average_round_trip_ms:.2f}")
+    metrics_table.add_row("Max round trip (ms)", f"{metrics.max_round_trip_ms:.2f}")
+    console.print(metrics_table)
+    if metrics.status_counts:
+        status_table = Table(title="Response Status Counts")
+        status_table.add_column("Status")
+        status_table.add_column("Count")
+        for status, count in metrics.status_counts.items():
+            status_table.add_row(status, str(count))
+        console.print(status_table)
     table = Table(title="Simulation Responses")
     table.add_column("Service")
     table.add_column("Status")
