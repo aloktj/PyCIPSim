@@ -36,6 +36,16 @@
       .insert-cell { width: 4rem; text-align: center; }
       .insert-cell details { display: inline-block; }
       .disabled-note { font-style: italic; color: #666; margin-top: 0.5rem; }
+      .sr-only {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        padding: 0;
+        margin: -1px;
+        overflow: hidden;
+        clip: rect(0, 0, 0, 0);
+        border: 0;
+      }
     </style>
   </head>
   <body>
@@ -156,6 +166,18 @@
                 </form>
               </details>
             {% endif %}
+            {% if not is_running %}
+              <div class="sr-only" aria-hidden="true">
+                {% for signal in assembly.signals %}
+                  {% set form_id = "signal-details-" ~ assembly.assembly_id ~ "-" ~ loop.index0 %}
+                  <form
+                    id="{{ form_id }}"
+                    method="post"
+                    action="/configs/{{ current.name }}/assemblies/{{ assembly.assembly_id }}/signals/{{ signal.name }}/details"
+                  ></form>
+                {% endfor %}
+              </div>
+            {% endif %}
             <table>
               <thead>
                 <tr>
@@ -168,10 +190,7 @@
               </thead>
               <tbody>
                 {% for signal in assembly.signals %}
-                  {% if not is_running %}
-                    {% set form_id = "signal-details-" ~ assembly.assembly_id ~ "-" ~ loop.index0 %}
-                    <form id="{{ form_id }}" method="post" action="/configs/{{ current.name }}/assemblies/{{ assembly.assembly_id }}/signals/{{ signal.name }}/details"></form>
-                  {% endif %}
+                  {% set form_id = "signal-details-" ~ assembly.assembly_id ~ "-" ~ loop.index0 %}
                   <tr>
                     <td>
                       {% if is_running %}
