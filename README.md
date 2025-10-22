@@ -1,69 +1,134 @@
-# PyCIPSim Roadmap
+# PyCIPSim
 
-> **Authoritative requirements live in [`SRS.md`](./SRS.md).** This README distills the near-term delivery plan for getting from the approved specification to a working prototype.
+> **Authoritative requirements live in [`SRS.md`](./SRS.md).** This README explains how the current codebase implements those
+> directives, how to get started locally, and what work remains.
 
-## Architecture Direction
+## Overview
 
-The initial implementation will focus on a modular Python package that mirrors the major capability areas in the SRS:
+PyCIPSim is a Python toolkit for simulating Common Industrial Protocol (CIP) traffic so that PLC integrations can be exercised
+without dedicated hardware. The implementation mirrors the major capabilities defined in the SRS:
 
-1. **Core Simulation Engine**
-   - Manage CIP session lifecycles (connect, sustain, tear down) and delegate protocol details to `pycomm3`.
-   - Provide synchronous helpers first, leaving room to introduce `asyncio`-powered flows in a later milestone.
-   - Persist request/response transcripts to structured log objects for later analysis.
-2. **Device Profile Library**
-   - Represent reusable PLC behavior models as Python classes with overridable hooks for fault injection.
-   - Support YAML/JSON-backed configuration so complex scenarios can be expressed without modifying code.
-3. **Scenario Orchestrator**
-   - Allow users to compose sequences of message exchanges, including branching on CIP status codes.
-   - Produce machine-readable execution reports (JSON/CSV) aligned with CI tooling expectations.
-4. **CLI and Automation Surface**
-   - Ship an ergonomic command group (e.g., `pycipsim run`, `pycipsim devices`, `pycipsim report`).
-   - Integrate with Python logging for configurable verbosity and export debug information suitable for pipelines.
+- **Session Management (`pycipsim.session`)** — wraps the lifecycle of CIP connections, provides retry semantics, and exposes
+  a unified interface for both simulated devices and live PLCs (via `pycomm3`).
+- **Device Profiles (`pycipsim.device`)** — captures reusable PLC behaviours, fault injections, and request/response data
+  structures.
+- **Scenario Execution (`pycipsim.engine`)** — orchestrates scripted message exchanges, validates expectations, and generates
+  machine-readable reports.
+- **Automation Surface (`pycipsim.cli`)** — Click-powered CLI that runs scenarios, lists bundled profiles, and scaffolds new
+  scenario definitions while emitting rich console output.
 
-Future architecture refinements (e.g., asynchronous drivers, GUI authoring tools) should be scheduled only after the baseline above is validated against the SRS.
+All modules log through `pycipsim.logging_config` to honour the observability requirements in the SRS.
 
-## Environment & Setup
+## Repository Layout
 
-1. **Prerequisites**
-   - Python 3.10 or newer (per SRS operating environment constraints).
-   - `pip` and `virtualenv` (or Poetry) for isolated dependency management.
-   - Network access to any target PLC endpoints used in integration testing.
-2. **Project Bootstrap**
+```
+pyproject.toml
+src/
+  pycipsim/
+    __init__.py
+    cli.py
+    device.py
+    engine.py
+    logging_config.py
+    session.py
+tests/
+  test_scenario.py
+```
+
+The `src/` layout keeps runtime packages separate from tests and documentation, simplifying packaging and tooling integration.
+
+## Getting Started
+
+### Prerequisites
+
+- Python 3.10 or newer (per SRS §2.4).
+- `pip` or `uv` for dependency installation.
+- Optional: `pycomm3` when connecting to real PLC hardware.
+
+### Installation
+
+```bash
+python -m venv .venv
+source .venv/bin/activate  # Windows: .venv\Scripts\activate
+python -m pip install --upgrade pip
+pip install -e .[dev]
+# Optional hardware support
+pip install pycomm3
+```
+
+### Running the CLI
+
+1. Generate a scenario template:
    ```bash
-   git clone <repo-url>
-   cd PyCIPSim
-   python -m venv .venv
-   source .venv/bin/activate  # On Windows use: .venv\Scripts\activate
-   pip install --upgrade pip
-   pip install -r requirements.txt  # placeholder until the dependency list is finalized
+   pycipsim scaffold scenarios/echo.json
    ```
-3. **Configuration**
-   - Place scenario definitions under `scenarios/` using the JSON/YAML schema documented in the SRS feature sections.
-   - Use environment variables for sensitive connection details (e.g., `PYCIPSIM_TARGET_IP`).
-   - Default logging writes to `logs/`; override via CLI flags once available.
+2. Execute the scenario against the default simulated Echo profile:
+   ```bash
+   pycipsim run --scenario scenarios/echo.json --report reports/echo.json
+   ```
+3. Inspect the bundled device profiles:
+   ```bash
+   pycipsim list-profiles
+   ```
 
-## Testing Strategy
+When `pycomm3` is available you can point the same command at live hardware with `--ip`, `--port`, and `--slot` overrides. The
+CLI emits structured JSON reports suitable for CI consumption as required in SRS §3.5.
 
-Automated confidence will be built iteratively:
+### Authoring Scenarios
 
-1. **Unit Tests**
-   - Cover session lifecycle helpers, device profile behaviors, and scenario orchestration utilities with `pytest`.
-   - Employ fixtures that stub `pycomm3` clients to avoid requiring live PLC hardware during CI.
-2. **Integration Tests**
-   - Spin up loopback or containerized CIP endpoints to validate end-to-end message flows.
-   - Ensure transcripts and generated reports conform to the formats promised in the SRS.
-3. **Performance & Reliability Checks**
-   - Stress-test scenario batches to confirm the 100 messages/second throughput expectation from the SRS.
-   - Run extended soak tests (≥24 hours) before tagging releases to validate stability objectives.
-4. **Continuous Integration**
-   - Configure workflows to lint (e.g., `ruff`/`black`), type-check (`mypy`), and execute the test suites on every push.
-   - Publish coverage and report artifacts so stakeholders can trace verification back to the requirements in `SRS.md`.
+Scenarios are JSON arrays with each element describing a single request/expectation pair:
 
-## Next Steps
+```json
+[
+  {
+    "request": {
+      "service_code": "ECHO",
+      "tag_path": "TagA",
+      "payload": "Hello CIP",
+      "metadata": {"comment": "Sample"}
+    },
+    "expected_status": "SUCCESS",
+    "description": "Validate echo behaviour"
+  }
+]
+```
 
-- Finalize dependency manifests and scaffolding scripts.
-- Scaffold the package structure (`pycipsim/`) with placeholders for engine, profiles, and CLI modules.
-- Establish CI pipelines mirroring the testing strategy above.
-- Iteratively implement and validate features, updating this roadmap when the SRS evolves.
+The CLI loader mirrors this structure and converts payload strings to bytes internally. Scenario execution halts on the first
+failure by default, but `--no-halt` enables full-run auditing.
 
-For any clarifications or requirement changes, always defer to [`SRS.md`](./SRS.md) as the single source of truth.
+### Device Profiles
+
+`pycipsim.device` includes two sample profiles to speed up local testing:
+
+- **EchoDevice** — returns the request payload unchanged (`ECHO` service), supporting connectivity checks.
+- **CounterDevice** — increments a per-tag counter (`READ` service), useful for exercising stateful scenarios.
+
+Fault injection helpers such as `drop_request_fault` and `delay_response_fault` can be composed into custom profiles to satisfy
+robustness testing requirements in SRS §3.3.
+
+## Testing & Quality
+
+Automated testing currently covers scenario execution with simulated devices. Run the suite with:
+
+```bash
+pytest
+```
+
+Future milestones will layer in additional checks to match the SRS quality targets:
+
+- Static analysis (`mypy`, `ruff`) and formatting hooks via `pre-commit`.
+- Integration tests targeting containerised PLC simulators once transport adapters are extended.
+- Performance harnesses to validate the ≥100 message-per-second throughput in SRS §5.1.
+
+## Roadmap Highlights
+
+Short-term work should focus on:
+
+1. **Transport Extensibility** — introduce additional adapters (e.g., asynchronous, UDP) while maintaining compatibility with
+   the `Transport` protocol in `session.py`.
+2. **Scenario DSL Enhancements** — expand beyond JSON arrays to support branching, timing constraints, and assertions mapped to
+   explicit SRS requirement IDs.
+3. **Reporting Improvements** — emit structured metrics (counts, latency histograms) to satisfy monitoring goals in SRS §3.4.
+4. **Documentation & Traceability** — link code artifacts back to SRS sections and maintain an ADR log under `docs/`.
+
+Refer back to [`SRS.md`](./SRS.md) after each milestone review to ensure the README and implementation remain aligned.
