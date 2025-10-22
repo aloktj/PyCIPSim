@@ -12,14 +12,16 @@ from rich.table import Table
 
 from .device import DeviceProfile, ServiceRequest, ServiceResponse, make_default_profiles
 from .engine import (
+    BenchmarkResult,
     ScenarioExecutionError,
     SimulationResult,
     SimulationScenario,
     SimulationStep,
+    run_benchmark,
     run_scenarios_parallel,
 )
 from .logging_config import configure_logging
-from .session import CIPSession, SessionConfig
+from .session import CIPSession, SessionConfig, TransportError
 
 console = Console()
 
@@ -155,6 +157,132 @@ def run(
     _render_multi_results(results)
 
 
+@cli.command()
+@click.option("--profile", type=click.Choice([p.name for p in make_default_profiles()]), help="Device profile to use.")
+@click.option("--profile-file", type=click.Path(exists=True, dir_okay=False), help="Path to custom profile JSON file.")
+@click.option("--ip", default="127.0.0.1", show_default=True, help="Target IP address for live sessions.")
+@click.option("--port", default=44818, show_default=True, type=int, help="Target port.")
+@click.option("--retries", default=3, show_default=True, type=int, help="Retry attempts.")
+@click.option("--timeout", default=2.5, show_default=True, type=float, help="Request timeout in seconds.")
+@click.option("--messages", default=200, show_default=True, type=int, help="Number of benchmark requests to send.")
+@click.option("--warmup", default=10, show_default=True, type=int, help="Warmup requests to issue before measuring throughput.")
+@click.option(
+    "--target-throughput",
+    default=100.0,
+    show_default=True,
+    type=float,
+    help="Required throughput in messages per second.",
+)
+@click.option("--service", default="ECHO", show_default=True, help="CIP service code to exercise.")
+@click.option("--tag", default="BenchmarkTag", show_default=True, help="Tag path used for the benchmark request.")
+@click.option("--payload", default="Hello CIP", show_default=True, help="Payload to send with each request.")
+@click.option("--slot", type=int, help="Slot identifier when targeting chassis-based PLCs.")
+@click.option(
+    "--allowed-host",
+    "allowed_hosts",
+    multiple=True,
+    help="Additional hostnames or IPs to whitelist for live sessions.",
+)
+@click.option("--allow-external", is_flag=True, help="Bypass the safety whitelist and allow external connections.")
+@click.option("--username-env", type=str, help="Environment variable containing a CIP username for pycomm3 sessions.")
+@click.option("--password-env", type=str, help="Environment variable containing a CIP password for pycomm3 sessions.")
+def benchmark(
+    profile: Optional[str],
+    profile_file: Optional[str],
+    ip: str,
+    port: int,
+    retries: int,
+    timeout: float,
+    messages: int,
+    warmup: int,
+    target_throughput: float,
+    service: str,
+    tag: str,
+    payload: str,
+    slot: Optional[int],
+    allowed_hosts: tuple[str, ...],
+    allow_external: bool,
+    username_env: Optional[str],
+    password_env: Optional[str],
+) -> None:
+    """Validate simulator throughput against performance targets."""
+
+    if messages < 1:
+        raise click.BadParameter("messages must be at least 1", param_hint="messages")
+    if warmup < 0:
+        raise click.BadParameter("warmup must be zero or greater", param_hint="warmup")
+    if target_throughput <= 0:
+        raise click.BadParameter(
+            "target-throughput must be greater than zero", param_hint="target-throughput"
+        )
+
+    profile_obj = _load_profile(profile, profile_file)
+    allowed = list(SessionConfig().allowed_hosts)
+    if allowed_hosts:
+        allowed.extend(list(allowed_hosts))
+    allowed = list(dict.fromkeys(allowed))
+    config = SessionConfig(
+        ip_address=ip,
+        port=port,
+        retries=retries,
+        timeout=timeout,
+        slot=slot,
+        allowed_hosts=tuple(allowed),
+        allow_external=allow_external,
+        username_env_var=username_env,
+        password_env_var=password_env,
+    )
+
+    if allow_external:
+        console.print(
+            "[yellow]External connections explicitly enabled. Confirm the target network is approved before proceeding.[/yellow]"
+        )
+
+    session = CIPSession(config=config, profile=profile_obj)
+    request = ServiceRequest(
+        service_code=service,
+        tag_path=tag,
+        payload=payload.encode("latin1") if payload else None,
+    )
+
+    try:
+        with session.lifecycle():
+            result = run_benchmark(session, request, message_count=messages, warmup=warmup)
+    except TransportError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    _render_benchmark(result, target_throughput)
+    if result.throughput_per_second < target_throughput:
+        raise click.ClickException(
+            f"Throughput {result.throughput_per_second:.2f} msg/s did not meet the target of {target_throughput:.2f} msg/s"
+        )
+
+
+@cli.command()
+@click.option("--host", default="127.0.0.1", show_default=True, help="Host interface to bind the web UI.")
+@click.option("--port", default=8000, show_default=True, type=int, help="Port for the web UI.")
+@click.option(
+    "--reload/--no-reload",
+    default=False,
+    show_default=True,
+    help="Enable auto-reload (development only).",
+)
+def web(host: str, port: int, reload: bool) -> None:
+    """Launch the web-based configuration interface."""
+
+    try:
+        import uvicorn
+    except ImportError as exc:  # pragma: no cover - optional dependency
+        raise click.UsageError(
+            "uvicorn is required to launch the web UI. Install pycipsim[web] to include the dependency."
+        ) from exc
+
+    from .web import get_app
+
+    app = get_app()
+    uvicorn.run(app, host=host, port=port, reload=reload)
+
+
 @cli.command("list-profiles")
 def list_profiles() -> None:
     """Display bundled device profiles."""
@@ -185,8 +313,27 @@ def scaffold(output: str) -> None:
             "description": "Verify echo service",
         }
     ]
-    Path(output).write_text(json.dumps(steps, indent=2), encoding="utf-8")
-    console.print(f"Scenario template written to {output}")
+    output_path = Path(output)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(json.dumps(steps, indent=2), encoding="utf-8")
+    console.print(f"Scenario template written to {output_path}")
+
+
+def _render_benchmark(result: BenchmarkResult, target: float) -> None:
+    table = Table(title="Benchmark Summary")
+    table.add_column("Metric")
+    table.add_column("Value")
+    table.add_row("Total messages", str(result.total_messages))
+    table.add_row("Duration (s)", f"{result.duration_seconds:.4f}")
+    table.add_row("Throughput (msg/s)", f"{result.throughput_per_second:.2f}")
+    table.add_row("Successes", str(result.success_count))
+    table.add_row("Failures", str(result.failure_count))
+    table.add_row("Target throughput (msg/s)", f"{target:.2f}")
+    table.add_row(
+        "Requirement met",
+        "Yes" if result.throughput_per_second >= target else "No",
+    )
+    console.print(table)
 
 
 def _render_single_result(result: SimulationResult) -> None:
