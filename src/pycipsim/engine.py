@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -81,6 +82,26 @@ class SimulationMetrics:
             "average_round_trip_ms": self.average_round_trip_ms,
             "max_round_trip_ms": self.max_round_trip_ms,
             "status_counts": dict(self.status_counts),
+        }
+
+
+@dataclass(slots=True)
+class BenchmarkResult:
+    """Summary of a performance benchmark run."""
+
+    total_messages: int
+    duration_seconds: float
+    throughput_per_second: float
+    success_count: int
+    failure_count: int
+
+    def to_dict(self) -> Dict[str, object]:
+        return {
+            "total_messages": self.total_messages,
+            "duration_seconds": self.duration_seconds,
+            "throughput_per_second": self.throughput_per_second,
+            "success_count": self.success_count,
+            "failure_count": self.failure_count,
         }
 
 
@@ -236,3 +257,40 @@ def run_scenarios_parallel(
         raise ScenarioExecutionError(failures)
 
     return results
+
+
+def run_benchmark(
+    session: CIPSession,
+    request: ServiceRequest,
+    message_count: int,
+    warmup: int = 0,
+) -> BenchmarkResult:
+    """Execute repeated service requests to capture throughput metrics."""
+
+    if message_count < 1:
+        raise ValueError("message_count must be at least 1")
+    if warmup < 0:
+        raise ValueError("warmup must be zero or greater")
+
+    for _ in range(warmup):
+        session.send(request)
+
+    success = 0
+    failure = 0
+    start = time.perf_counter()
+    for _ in range(message_count):
+        response = session.send(request)
+        if response.status.upper() == "SUCCESS":
+            success += 1
+        else:
+            failure += 1
+    duration = time.perf_counter() - start
+    duration = max(duration, 1e-9)
+    throughput = message_count / duration
+    return BenchmarkResult(
+        total_messages=message_count,
+        duration_seconds=duration,
+        throughput_per_second=throughput,
+        success_count=success,
+        failure_count=failure,
+    )

@@ -24,10 +24,10 @@ The remainder of this document describes the overall system context, detailed fu
 ## 2. Overall Description
 
 ### 2.1 Product Perspective
-PyCIPSim will operate as a standalone simulation toolkit that can be integrated into existing Python-based testing frameworks. The simulator will model both client and server behaviors for CIP messaging by leveraging the `pycomm3` library to enforce protocol compliance and message formatting.
+PyCIPSim will operate as a standalone simulation toolkit that can be integrated into existing Python-based testing frameworks and surfaced through a lightweight web dashboard. The simulator will model both client and server behaviors for CIP messaging by leveraging the `pycomm3` library to enforce protocol compliance and message formatting while providing a browser experience for configuration management.
 
 ### 2.2 Product Functions
-The system will provide functionality to configure simulated devices, issue CIP service requests, process responses, log transaction data, and inject configurable fault scenarios for robustness testing. Support for automated execution will enable users to script complex test scenarios.
+The system will provide functionality to configure simulated devices, persist named configurations, issue CIP service requests, process responses, log transaction data, and inject configurable fault scenarios for robustness testing. Support for automated execution will enable users to script complex test scenarios, while the web application will let operators upload, edit, and activate configurations without touching the command line.
 
 ### 2.3 User Classes and Characteristics
 Primary users will include automation engineers, software developers, and QA testers who require a lightweight environment to validate CIP integrations. Users are expected to be familiar with Python scripting and basic Ethernet/IP concepts.
@@ -48,8 +48,9 @@ It is assumed that users have access to Python development environments and can 
 
 ### 3.1 CIP Session Simulation
 1. The system shall allow users to define simulated CIP sessions that connect to virtual or real PLC endpoints using the `pycomm3` library's client interfaces.
-2. The system shall support configuration of session parameters, including target IP addresses, ports, connection timeouts, and retry counts.
+2. The system shall support configuration of session parameters, including target IP addresses, ports, connection timeouts, retry counts, multicast receive addresses, and slot identifiers when applicable.
 3. The system shall maintain session state, including connection establishment, keep-alive messaging, and graceful teardown procedures.
+4. The system shall expose explicit status for TCP socket creation, ENIP register session, and CIP forward-open operations so operators can confirm the entire handshake when acting as the originator.
 
 ### 3.2 Message Exchange Engine
 1. The system shall send CIP service requests (e.g., Read Tag, Write Tag, Custom Services) using `pycomm3` abstractions and shall capture the responses for analysis.
@@ -71,10 +72,16 @@ It is assumed that users have access to Python development environments and can 
 2. The system shall provide Python APIs that allow integration with unit tests written in `pytest` or similar frameworks.
 3. The system shall produce machine-readable reports (e.g., JSON) summarizing scenario outcomes for automated analysis.
 
+### 3.6 Web Configuration Management
+1. The system shall allow users to upload CIP configuration files via a web interface and persist them for reuse.
+2. The system shall present assemblies and signals in tabular form, showing offsets, types, and current values.
+3. The system shall prevent modification of signal types, offsets, and names while a simulation is running but permit payload value updates (set/clear) during execution.
+4. The system shall provide controls to start and stop the simulator using any saved configuration, updating the displayed handshake status accordingly.
+
 ## 4. External Interface Requirements
 
 ### 4.1 User Interfaces
-The system shall offer a command-line interface with subcommands for configuring devices, running simulations, and exporting reports. Optional text-based prompts shall be provided for interactive sessions.
+The system shall offer a command-line interface with subcommands for configuring devices, running simulations, launching the web application, and exporting reports. A browser-based interface shall allow users to upload configurations, review assembly tables, and control simulator lifecycle events.
 
 ### 4.2 Application Programming Interfaces
 The system shall expose Python modules that allow importing classes for session management, device profiles, and scenario orchestration. API functions shall be documented with type hints and docstrings to facilitate IDE support.
@@ -86,7 +93,7 @@ The system shall interact with network interface controllers available on the ho
 The system shall interface with `pycomm3` for Ethernet/IP communications, Python's `asyncio` (if asynchronous operations are required), and optional libraries such as `pytest` for testing and `rich` for enhanced CLI output. Each supporting tool shall be justified based on improved developer ergonomics or testing capabilities.
 
 ### 4.5 Communications Interfaces
-The system shall support TCP and UDP communications as defined by the Ethernet/IP specification, leveraging `pycomm3` to handle encapsulation and session management. Configuration shall allow users to set custom ports when simulating non-standard environments.
+The system shall support TCP and UDP communications as defined by the Ethernet/IP specification, leveraging `pycomm3` to handle encapsulation and session management. Configuration shall allow users to set custom ports when simulating non-standard environments, as well as multicast or unicast receive addresses for I/O exchange. The handshake helper shall surface status for the TCP, ENIP, and CIP stages to aid troubleshooting.
 
 ## 5. Other Nonfunctional Requirements
 
@@ -107,7 +114,7 @@ The system shall maintain compatibility with open-source licensing obligations a
 
 ## 6. Supporting Tools and Dependencies
 
-The system shall designate `pycomm3` as the primary dependency for Ethernet/IP interactions due to its active maintenance, protocol coverage, and Pythonic interface. The project shall recommend `pytest` for automated testing because it provides expressive fixtures and integration with CI tools. Optional dependencies such as `rich` may be justified to enhance command-line output readability, while `mypy` or similar static analysis tools may be recommended to improve code quality during development.
+The system shall designate `pycomm3` as the primary dependency for Ethernet/IP interactions due to its active maintenance, protocol coverage, and Pythonic interface. The project shall rely on `uvicorn` to host the FastAPI dashboard, and recommend `pytest` for automated testing because it provides expressive fixtures and integration with CI tools. Optional dependencies such as `rich` may be justified to enhance command-line output readability, while `mypy` or similar static analysis tools may be recommended to improve code quality during development.
 
 ## 7. Appendices
 
