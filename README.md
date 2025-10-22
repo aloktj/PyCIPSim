@@ -20,6 +20,18 @@ without dedicated hardware. The implementation mirrors the major capabilities de
 
 All modules log through `pycipsim.logging_config` to honour the observability requirements in the SRS.
 
+## Current Status
+
+- ✅ Editable install exposes the `pycipsim` console script so CLI commands are available immediately after setup.
+- ✅ Optional `[pycomm3]` extra now resolves against the published `pycomm3==1.2.14` release, so hardware connectivity installs succeed on fresh environments.
+- ✅ `pycipsim scaffold` creates intermediate directories before writing scenario templates, unblocking first-run usage.
+
+## Next Steps
+
+1. Add integration coverage that exercises real `pycomm3` sessions when hardware or emulators are available.
+2. Expand CLI regression tests to cover `run` report generation and failure-path messaging.
+3. Document advanced scenario patterns (loops, conditional expectations) to guide complex simulation authoring.
+
 ## Repository Layout
 
 ```
