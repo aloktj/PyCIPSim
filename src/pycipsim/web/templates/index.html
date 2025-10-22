@@ -5,7 +5,8 @@
     <title>PyCIPSim Web</title>
     <style>
       body { font-family: Arial, sans-serif; margin: 2rem; }
-      header { display: flex; justify-content: space-between; align-items: center; }
+      header { display: flex; justify-content: space-between; align-items: center; gap: 1rem; }
+      header .header-actions { display: flex; gap: 0.5rem; align-items: center; }
       table { border-collapse: collapse; width: 100%; margin-bottom: 2rem; }
       th, td { border: 1px solid #ccc; padding: 0.5rem; text-align: left; }
       th { background: #f5f5f5; }
@@ -14,17 +15,46 @@
       .status.error { background: #ffebee; color: #b71c1c; }
       form.inline { display: inline; }
       .signal-actions form { display: inline; margin-right: 0.5rem; }
+      .signal-actions input[type="text"] { width: 8rem; }
       .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 2rem; }
       .config-list ul { list-style: none; padding: 0; }
       .config-list li { margin-bottom: 0.5rem; }
       .config-list form { display: inline; }
       .handshake-steps { margin-top: 1rem; }
+      .target-form { margin-bottom: 1.5rem; }
+      .target-form label { display: block; margin-bottom: 0.5rem; }
+      .target-form input[type="text"],
+      .target-form input[type="number"] { width: 14rem; }
+      .target-form .inline-field { display: inline-flex; flex-direction: column; margin-right: 1rem; }
+      .add-summary { cursor: pointer; display: inline-flex; align-items: center; justify-content: center; width: 2rem; height: 2rem; border: 1px solid #999; border-radius: 50%; font-size: 1.25rem; background: #fafafa; }
+      .add-summary:hover { background: #f0f0f0; }
+      details.add-signal { margin-top: 0.5rem; }
+      details.add-signal form { margin-top: 0.75rem; display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: flex-end; }
+      details.add-signal label { display: flex; flex-direction: column; font-size: 0.9rem; }
+      details.add-signal input[type="text"],
+      details.add-signal input[type="number"] { width: 10rem; }
+      .insert-cell { width: 4rem; text-align: center; }
+      .insert-cell details { display: inline-block; }
+      .disabled-note { font-style: italic; color: #666; margin-top: 0.5rem; }
+      .sr-only {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        padding: 0;
+        margin: -1px;
+        overflow: hidden;
+        clip: rect(0, 0, 0, 0);
+        border: 0;
+      }
     </style>
   </head>
   <body>
     <header>
       <h1>PyCIPSim Web Simulator</h1>
-      <div>
+      <div class="header-actions">
+        {% if current %}
+          <a href="/configs/{{ current.name }}/export">Export JSON</a>
+        {% endif %}
         {% if active %}
           <form method="post" action="/stop" class="inline">
             <button type="submit">Stop Simulator</button>
@@ -71,13 +101,39 @@
 
       <div class="config-detail">
         {% if current %}
+          {% set is_running = active and active.configuration_name == current.name %}
           <h2>Configuration: {{ current.name }}</h2>
-          <p><strong>Target IP:</strong> {{ current.target_ip }} | <strong>Port:</strong> {{ current.target_port }}</p>
-          {% if current.receive_address %}
-            <p><strong>Receive Address:</strong> {{ current.receive_address }} {% if current.multicast %}(Multicast){% endif %}</p>
-          {% endif %}
+          <div class="target-form">
+            <form method="post" action="/configs/{{ current.name }}/target">
+              <div class="inline-field">
+                <label>Target IP
+                  <input type="text" name="target_ip" value="{{ current.target_ip }}" {% if is_running %}disabled{% endif %} />
+                </label>
+              </div>
+              <div class="inline-field">
+                <label>Port
+                  <input type="number" name="target_port" value="{{ current.target_port }}" {% if is_running %}disabled{% endif %} />
+                </label>
+              </div>
+              <div class="inline-field">
+                <label>Receive Address
+                  <input type="text" name="receive_address" value="{{ current.receive_address or '' }}" {% if is_running %}disabled{% endif %} />
+                </label>
+              </div>
+              <label>
+                <input type="checkbox" name="multicast" value="on" {% if current.multicast %}checked{% endif %} {% if is_running %}disabled{% endif %} />
+                Multicast
+              </label>
+              <div>
+                <button type="submit" {% if is_running %}disabled{% endif %}>Save Target</button>
+              </div>
+            </form>
+            {% if is_running %}
+              <p class="disabled-note">Target fields are locked while the simulator is running.</p>
+            {% endif %}
+          </div>
 
-          {% if active and active.configuration_name == current.name %}
+          {% if is_running %}
             <div class="handshake-steps">
               <h3>Handshake Status</h3>
               <p>Started at {{ active.started_at }} (UTC)</p>
@@ -91,6 +147,38 @@
 
           {% for assembly in current.assemblies %}
             <h3>Assembly {{ assembly.name }} (#{{ assembly.assembly_id }})</h3>
+            {% set is_input_assembly = assembly.direction and assembly.direction|lower in ['input', 'in'] %}
+            {% if not is_running %}
+              <details class="add-signal">
+                <summary class="add-summary" title="Add signal at start">+</summary>
+                <form method="post" action="/configs/{{ current.name }}/assemblies/{{ assembly.assembly_id }}/signals/add">
+                  <input type="hidden" name="position" value="before" />
+                  <input type="hidden" name="relative_signal" value="{{ assembly.signals[0].name if assembly.signals else '' }}" />
+                  <label>Signal Name
+                    <input type="text" name="new_name" required />
+                  </label>
+                  <label>Offset
+                    <input type="number" name="offset" required />
+                  </label>
+                  <label>Type
+                    <input type="text" name="signal_type" required />
+                  </label>
+                  <button type="submit">Add Signal</button>
+                </form>
+              </details>
+            {% endif %}
+            {% if not is_running %}
+              <div class="sr-only" aria-hidden="true">
+                {% for signal in assembly.signals %}
+                  {% set form_id = "signal-details-" ~ assembly.assembly_id ~ "-" ~ loop.index0 %}
+                  <form
+                    id="{{ form_id }}"
+                    method="post"
+                    action="/configs/{{ current.name }}/assemblies/{{ assembly.assembly_id }}/signals/{{ signal.name }}/details"
+                  ></form>
+                {% endfor %}
+              </div>
+            {% endif %}
             <table>
               <thead>
                 <tr>
@@ -98,34 +186,84 @@
                   <th>Signal</th>
                   <th>Type</th>
                   <th>Value</th>
+                  <th class="insert-cell">Insert</th>
                 </tr>
               </thead>
               <tbody>
                 {% for signal in assembly.signals %}
+                  {% set form_id = "signal-details-" ~ assembly.assembly_id ~ "-" ~ loop.index0 %}
                   <tr>
-                    <td>{{ signal.offset }}</td>
-                    <td>{{ signal.name }}</td>
                     <td>
-                      {% if active and active.configuration_name == current.name %}
+                      {% if is_running %}
+                        {{ signal.offset }}
+                      {% else %}
+                        <input form="{{ form_id }}" type="number" name="offset" value="{{ signal.offset }}" required />
+                      {% endif %}
+                    </td>
+                    <td>
+                      {% if is_running %}
+                        {{ signal.name }}
+                      {% else %}
+                        <input form="{{ form_id }}" type="text" name="new_name" value="{{ signal.name }}" required />
+                      {% endif %}
+                    </td>
+                    <td>
+                      {% if is_running %}
                         {{ signal.signal_type }}
                       {% else %}
-                        <form method="post" action="/configs/{{ current.name }}/assemblies/{{ assembly.assembly_id }}/signals/{{ signal.name }}/type">
-                          <input type="text" name="signal_type" value="{{ signal.signal_type }}" />
-                          <button type="submit">Save Type</button>
-                        </form>
+                        <input form="{{ form_id }}" type="text" name="signal_type" value="{{ signal.signal_type }}" required />
+                        <button form="{{ form_id }}" type="submit">Save</button>
                       {% endif %}
                     </td>
                     <td class="signal-actions">
-                      <form method="post" action="/configs/{{ current.name }}/assemblies/{{ assembly.assembly_id }}/signals/{{ signal.name }}/value">
-                        <input type="text" name="value" value="{{ signal.value or '' }}" />
-                        <button type="submit" name="action" value="set">Set</button>
-                        <button type="submit" name="action" value="clear">Clear</button>
-                      </form>
+                      {% if is_input_assembly %}
+                        <input
+                          type="text"
+                          value="{{ signal.value if signal.value is not none else 0 }}"
+                          readonly
+                          disabled
+                        />
+                      {% else %}
+                        <form method="post" action="/configs/{{ current.name }}/assemblies/{{ assembly.assembly_id }}/signals/{{ signal.name }}/value">
+                          <input type="text" name="value" value="{{ signal.value or '' }}" />
+                          <button type="submit" name="action" value="set">Set</button>
+                          <button type="submit" name="action" value="clear">Clear</button>
+                        </form>
+                      {% endif %}
+                    </td>
+                    <td class="insert-cell">
+                      {% if not is_running %}
+                        <details class="add-signal">
+                          <summary class="add-summary" title="Add signal after">+</summary>
+                          <form method="post" action="/configs/{{ current.name }}/assemblies/{{ assembly.assembly_id }}/signals/add">
+                            <input type="hidden" name="position" value="after" />
+                            <input type="hidden" name="relative_signal" value="{{ signal.name }}" />
+                            <label>Signal Name
+                              <input type="text" name="new_name" required />
+                            </label>
+                            <label>Offset
+                              <input type="number" name="offset" required />
+                            </label>
+                            <label>Type
+                              <input type="text" name="signal_type" required />
+                            </label>
+                            <button type="submit">Add Signal</button>
+                          </form>
+                        </details>
+                      {% endif %}
                     </td>
                   </tr>
                 {% endfor %}
+                {% if not assembly.signals %}
+                  <tr>
+                    <td colspan="5">No signals defined.</td>
+                  </tr>
+                {% endif %}
               </tbody>
             </table>
+            {% if is_running %}
+              <p class="disabled-note">Signal attributes are locked while the simulator is running. Use the value controls to update live data.</p>
+            {% endif %}
           {% else %}
             <p>No assemblies defined.</p>
           {% endfor %}
