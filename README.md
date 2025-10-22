@@ -15,8 +15,10 @@ without dedicated hardware. The implementation mirrors the major capabilities de
   structures.
 - **Scenario Execution (`pycipsim.engine`)** — orchestrates scripted message exchanges, validates expectations, and generates
   machine-readable reports.
-- **Automation Surface (`pycipsim.cli`)** — Click-powered CLI that runs scenarios, lists bundled profiles, and scaffolds new
-  scenario definitions while emitting rich console output.
+- **Automation Surface (`pycipsim.cli`)** — Click-powered CLI that runs scenarios, lists bundled profiles, scaffolds new
+  scenario definitions, exposes a throughput benchmark, and launches the web dashboard.
+- **Web Application (`pycipsim.web`)** — FastAPI/Jinja interface for uploading CIP configurations, editing assemblies, and
+  supervising simulator state with explicit handshake visibility.
 
 All modules log through `pycipsim.logging_config` to honour the observability requirements in the SRS.
 
@@ -26,13 +28,15 @@ All modules log through `pycipsim.logging_config` to honour the observability re
 - ✅ Optional `[pycomm3]` extra now resolves against the published `pycomm3==1.2.14` release, so hardware connectivity installs succeed on fresh environments.
 - ✅ `pycipsim scaffold` creates intermediate directories before writing scenario templates, unblocking first-run usage.
 - ✅ `pycipsim benchmark` validates the ≥100 msg/s performance requirement called out in SRS §5.1 when run against bundled profiles.
+- ✅ The FastAPI web dashboard persists uploaded CIP configurations, enforces signal-type locking while simulations run, and exposes payload controls for live sessions.
+- ✅ `perform_handshake` renders explicit TCP → ENIP → CIP forward-open progress so operators can confirm originator behaviour before exchanging cyclic I/O.
 
 ## Next Steps
 
 1. Add integration coverage that exercises real `pycomm3` sessions when hardware or emulators are available.
-2. Implement UDP transport adapters to satisfy the communications interface expectations in SRS §4.5.
-3. Expand CLI regression tests to cover `run` report generation and failure-path messaging.
-4. Document advanced scenario patterns (loops, conditional expectations) to guide complex simulation authoring.
+2. Expand the web UI with live log streaming, UDP transport configuration, and richer assembly visualisations.
+3. Implement UDP transport adapters to satisfy the communications interface expectations in SRS §4.5.
+4. Extend CLI and web regression suites to cover failure messaging, report downloads, and session teardown scenarios.
 
 ## Repository Layout
 
@@ -99,6 +103,18 @@ When `pycomm3` is available you can point the same command at live hardware with
 variable names via `--username-env` / `--password-env` so secrets stay out of config files. The CLI emits structured JSON
 reports and rich tables that include latency metrics and status tallies to satisfy SRS §3.4 and §3.5.
 
+### Launching the Web UI
+
+Install the `web` extra (or rely on the core dependencies bundled with editable installs) and launch the FastAPI dashboard:
+
+```bash
+pycipsim web --host 0.0.0.0 --port 8000
+```
+
+Navigate to `http://localhost:8000` to upload CIP configuration files, select a saved configuration to inspect assemblies,
+change signal types before starting the simulator, and toggle payload values while the simulator is running. The page displays
+TCP, ENIP, and CIP forward-open handshake steps so you can confirm originator progress prior to cyclic I/O traffic.
+
 ### Authoring Scenarios
 
 Scenarios are JSON arrays with each element describing a single request/expectation pair:
@@ -120,6 +136,37 @@ Scenarios are JSON arrays with each element describing a single request/expectat
 
 The CLI loader mirrors this structure and converts payload strings to bytes internally. Scenario execution halts on the first
 failure by default, but `--no-halt` enables full-run auditing.
+
+### Web Configuration Files
+
+The web interface accepts JSON objects describing originator connection details and CIP assemblies. A minimal example looks like
+this:
+
+```json
+{
+  "name": "Demo Cell",
+  "target": {
+    "ip": "192.168.0.10",
+    "port": 44818,
+    "receive_address": "239.1.1.1",
+    "multicast": true
+  },
+  "assemblies": [
+    {
+      "id": 100,
+      "name": "Outputs",
+      "direction": "output",
+      "signals": [
+        {"name": "ValveA", "offset": 0, "type": "BOOL", "value": "0"},
+        {"name": "PumpSpeed", "offset": 2, "type": "INT", "value": "1200"}
+      ]
+    }
+  ]
+}
+```
+
+Signals can be edited directly in the UI prior to starting the simulator. Once running, signal types and offsets are locked, but
+operators can use the provided set/clear controls to adjust payload values on the fly.
 
 ### Batch & Parallel Execution
 

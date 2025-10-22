@@ -258,6 +258,31 @@ def benchmark(
         )
 
 
+@cli.command()
+@click.option("--host", default="127.0.0.1", show_default=True, help="Host interface to bind the web UI.")
+@click.option("--port", default=8000, show_default=True, type=int, help="Port for the web UI.")
+@click.option(
+    "--reload/--no-reload",
+    default=False,
+    show_default=True,
+    help="Enable auto-reload (development only).",
+)
+def web(host: str, port: int, reload: bool) -> None:
+    """Launch the web-based configuration interface."""
+
+    try:
+        import uvicorn
+    except ImportError as exc:  # pragma: no cover - optional dependency
+        raise click.UsageError(
+            "uvicorn is required to launch the web UI. Install pycipsim[web] to include the dependency."
+        ) from exc
+
+    from .web import get_app
+
+    app = get_app()
+    uvicorn.run(app, host=host, port=port, reload=reload)
+
+
 @cli.command("list-profiles")
 def list_profiles() -> None:
     """Display bundled device profiles."""
