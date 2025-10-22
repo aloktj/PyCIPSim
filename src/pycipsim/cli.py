@@ -185,8 +185,10 @@ def scaffold(output: str) -> None:
             "description": "Verify echo service",
         }
     ]
-    Path(output).write_text(json.dumps(steps, indent=2), encoding="utf-8")
-    console.print(f"Scenario template written to {output}")
+    output_path = Path(output)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(json.dumps(steps, indent=2), encoding="utf-8")
+    console.print(f"Scenario template written to {output_path}")
 
 
 def _render_single_result(result: SimulationResult) -> None:
