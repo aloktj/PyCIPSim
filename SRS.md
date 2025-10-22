@@ -114,7 +114,7 @@ The system shall maintain compatibility with open-source licensing obligations a
 
 ## 6. Supporting Tools and Dependencies
 
-The system shall designate `pycomm3` as the primary dependency for Ethernet/IP interactions due to its active maintenance, protocol coverage, and Pythonic interface. The project shall recommend `pytest` for automated testing because it provides expressive fixtures and integration with CI tools. Optional dependencies such as `rich` may be justified to enhance command-line output readability, while `mypy` or similar static analysis tools may be recommended to improve code quality during development.
+The system shall designate `pycomm3` as the primary dependency for Ethernet/IP interactions due to its active maintenance, protocol coverage, and Pythonic interface. The project shall rely on `uvicorn` to host the FastAPI dashboard, and recommend `pytest` for automated testing because it provides expressive fixtures and integration with CI tools. Optional dependencies such as `rich` may be justified to enhance command-line output readability, while `mypy` or similar static analysis tools may be recommended to improve code quality during development.
 
 ## 7. Appendices
 

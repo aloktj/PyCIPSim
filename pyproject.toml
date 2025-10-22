@@ -17,6 +17,7 @@ dependencies = [
     "jinja2>=3.1",
     "python-multipart>=0.0.9",
     "httpx>=0.27",
+    "uvicorn[standard]>=0.23",
 ]
 
 [project.optional-dependencies]
@@ -27,9 +28,6 @@ dev = [
 ]
 pycomm3 = [
     "pycomm3>=1.2.14",
-]
-web = [
-    "uvicorn[standard]>=0.23",
 ]
 
 [project.urls]

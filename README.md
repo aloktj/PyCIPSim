@@ -105,7 +105,7 @@ reports and rich tables that include latency metrics and status tallies to satis
 
 ### Launching the Web UI
 
-Install the `web` extra (or rely on the core dependencies bundled with editable installs) and launch the FastAPI dashboard:
+With the default installation dependencies in place you can launch the FastAPI dashboard directly:
 
 ```bash
 pycipsim web --host 0.0.0.0 --port 8000

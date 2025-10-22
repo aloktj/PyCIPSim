@@ -274,7 +274,7 @@ def web(host: str, port: int, reload: bool) -> None:
         import uvicorn
     except ImportError as exc:  # pragma: no cover - optional dependency
         raise click.UsageError(
-            "uvicorn is required to launch the web UI. Install pycipsim[web] to include the dependency."
+            "uvicorn is required to launch the web UI. Reinstall PyCIPSim with its default dependencies or install uvicorn."
         ) from exc
 
     from .web import get_app
