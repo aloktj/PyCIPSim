@@ -192,6 +192,7 @@ class PyComm3Transport:
 
         payload = request.payload or b""
         start = time.perf_counter()
+        connected = bool(metadata.get("connected"))
         try:
             tag = self._driver.generic_message(
                 service=service_code,
@@ -199,7 +200,7 @@ class PyComm3Transport:
                 instance=instance_id,
                 attribute=3,
                 request_data=payload,
-                connected=True,
+                connected=connected,
                 name=request.service_code.lower(),
             )
         except Exception as exc:  # pragma: no cover - depends on network
