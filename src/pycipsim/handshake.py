@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Callable, Dict, Iterable, List, Optional, Protocol, Tuple
 
+from .cip import format_path
 from .session import SessionConfig
 
 
@@ -284,6 +285,7 @@ def _resolve_driver(config: SessionConfig) -> HandshakeDriver:
                 "path_bytes": path_bytes,
                 "path_words": path_words,
                 "connection_points": connection_points,
+                "path_description": format_path(bytes(path_bytes)),
             },
         )
 

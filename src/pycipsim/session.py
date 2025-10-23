@@ -10,6 +10,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, List, Optional, Protocol, Sequence, Tuple
 
+from .cip import describe_error, resolve_service_code
 from .device import DeviceProfile, ServiceRequest, ServiceResponse
 
 _LOGGER = logging.getLogger(__name__)
@@ -52,6 +53,32 @@ class Transport(Protocol):
 
     def send(self, request: ServiceRequest) -> ServiceResponse:  # pragma: no cover - interface
         """Send a service request and return the response."""
+
+
+def _summarize_cip_error(error: Any) -> str:
+    """Render CIP response errors using known status descriptions when possible."""
+
+    if isinstance(error, str):
+        return error
+
+    general_status = getattr(error, "status", None)
+    if general_status is None:
+        general_status = getattr(error, "general_status", None)
+
+    if isinstance(general_status, int):
+        description = describe_error(general_status)
+    else:
+        description = str(error)
+
+    extended = getattr(error, "extended_status", None)
+    if extended is None:
+        extended = getattr(error, "extended_statuses", None)
+    if isinstance(extended, (list, tuple)):
+        hex_values = [f"0x{int(code) & 0xFFFF:04X}" for code in extended if isinstance(code, int)]
+        if hex_values:
+            description = f"{description} (extended {', '.join(hex_values)})"
+
+    return description
 
 
 @dataclass(slots=True)
@@ -216,7 +243,7 @@ class PyComm3Transport:
                 raise TransportError(str(exc)) from exc
             duration = (time.perf_counter() - start) * 1000
             if tag.error:
-                status = str(tag.error)
+                status = _summarize_cip_error(tag.error)
             else:
                 status = "SUCCESS"
             response_payload: Optional[bytes]
@@ -280,7 +307,7 @@ class PyComm3Transport:
         start = time.perf_counter()
         try:
             tag = self._driver.generic_message(
-                service=request.service_code,
+                service=resolve_service_code(request.service_code),
                 class_code=class_code_int,
                 instance=instance_int,
                 attribute=attribute_int,
@@ -291,7 +318,7 @@ class PyComm3Transport:
         except Exception as exc:  # pragma: no cover - depends on network
             raise TransportError(str(exc)) from exc
         duration = (time.perf_counter() - start) * 1000
-        status = "SUCCESS" if not tag.error else str(tag.error)
+        status = "SUCCESS" if not tag.error else _summarize_cip_error(tag.error)
         value = tag.value
         if isinstance(value, bytearray):
             payload = bytes(value)
