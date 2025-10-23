@@ -4,12 +4,14 @@ import json
 import time
 from pathlib import Path
 from typing import List
+from urllib.parse import parse_qs, urlparse
 
 import pytest
 from fastapi.testclient import TestClient
 
 from pycipsim.config_store import ConfigurationStore, SimulatorConfiguration
 from pycipsim.device import ServiceResponse
+from pycipsim.handshake import HandshakePhase, HandshakeResult, HandshakeStep
 from pycipsim.session import CIPSession, SessionConfig
 from pycipsim.web.app import SimulatorManager, get_app
 
@@ -188,6 +190,49 @@ def test_start_simulated_mode_skips_runtime(
     assert active is not None
     assert active.runtime is None
 
+
+def test_live_handshake_failure_displays_steps(
+    store: ConfigurationStore,
+    manager: SimulatorManager,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = SimulatorConfiguration.from_dict(_scenario_payload())
+    store.upsert(config)
+    manager._simulate_handshake = False  # type: ignore[attr-defined]
+
+    failure_steps = [
+        HandshakeStep(HandshakePhase.TCP_CONNECT, True, "Socket established"),
+        HandshakeStep(HandshakePhase.ENIP_SESSION, False, "Service not supported"),
+    ]
+    handshake = HandshakeResult(
+        success=False,
+        steps=failure_steps,
+        error="Service not supported",
+        duration_ms=12.5,
+    )
+
+    def fake_handshake(config: SessionConfig, *, simulate: bool) -> HandshakeResult:
+        return handshake
+
+    monkeypatch.setattr("pycipsim.web.app.perform_handshake", fake_handshake)
+
+    app = get_app(store=store, manager=manager)
+    client = TestClient(app)
+
+    response = client.post("/configs/WebConfig/start", follow_redirects=False)
+    assert response.status_code == 303
+    location = response.headers["location"]
+    parsed = urlparse(location)
+    params = parse_qs(parsed.query)
+    assert params.get("error") == ["ENIP session failed: Service not supported"]
+    assert manager.active() is None
+
+    page = client.get(location)
+    assert page.status_code == 200
+    body = page.text
+    assert "TCP handshake — Success" in body
+    assert "ENIP session — Failed" in body
+    assert "Failure reason: Service not supported" in body
 
 def test_type_update_blocked_when_running(
     store: ConfigurationStore, manager: SimulatorManager

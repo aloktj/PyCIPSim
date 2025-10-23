@@ -21,6 +21,13 @@
       .config-list li { margin-bottom: 0.5rem; }
       .config-list form { display: inline; }
       .handshake-steps { margin-top: 1rem; }
+      .handshake-steps ul { list-style: none; padding: 0; margin: 0.5rem 0 0; }
+      .handshake-steps li { padding: 0.25rem 0; }
+      .handshake-steps .step-success { color: #256029; }
+      .handshake-steps .step-failure { color: #b71c1c; font-weight: bold; }
+      .handshake-steps .step-detail { font-size: 0.9rem; color: #555; display: block; }
+      .handshake-steps .overall-note { margin-top: 0.5rem; font-style: italic; }
+      .handshake-steps .overall-note.error { font-style: normal; color: #b71c1c; font-weight: bold; }
       .target-form { margin-bottom: 1.5rem; }
       .target-form label { display: block; margin-bottom: 0.5rem; }
       .target-form input[type="text"],
@@ -200,15 +207,31 @@
             {% endif %}
           </div>
 
-          {% if is_running %}
+          {% set handshake = handshake_result %}
+          {% if handshake %}
             <div class="handshake-steps">
               <h3>Handshake Status</h3>
-              <p>Started at {{ active.started_at }} (UTC)</p>
+              {% if is_running %}
+                <p>Started at {{ active.started_at }} (UTC)</p>
+              {% else %}
+                <p>
+                  Last attempt {{ 'succeeded' if handshake.success else 'failed' }}
+                  in {{ '%.2f'|format(handshake.duration_ms) }} ms.
+                </p>
+              {% endif %}
               <ul>
-                {% for step in active.handshake.steps %}
-                  <li>{{ step.phase }} — {{ "Success" if step.success else "Failed" }} ({{ step.detail }})</li>
+                {% for step in handshake.steps %}
+                  {% set phase_key = step.phase.value if step.phase is not string else step.phase %}
+                  {% set label = handshake_labels.get(phase_key, phase_key.replace('_', ' ')|title) %}
+                  <li class="{{ 'step-success' if step.success else 'step-failure' }}">
+                    {{ label }} — {{ 'Success' if step.success else 'Failed' }}
+                    <span class="step-detail">{{ step.detail }}</span>
+                  </li>
                 {% endfor %}
               </ul>
+              {% if not handshake.success and handshake.error %}
+                <p class="overall-note error">Failure reason: {{ handshake.error }}</p>
+              {% endif %}
             </div>
           {% endif %}
 

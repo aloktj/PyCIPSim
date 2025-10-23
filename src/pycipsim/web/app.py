@@ -21,7 +21,7 @@ from ..config_store import (
     SimulatorConfiguration,
 )
 from ..configuration import CIP_SIGNAL_TYPES
-from ..handshake import HandshakeResult, perform_handshake
+from ..handshake import HandshakePhase, HandshakeResult, perform_handshake
 from ..runtime import CIPIORuntime
 from ..session import CIPSession, SessionConfig
 
@@ -53,6 +53,7 @@ class SimulatorManager:
         self._session_factory = session_factory or (lambda cfg, _config: CIPSession(cfg))
         self._cycle_interval = cycle_interval
         self._simulate_handshake = simulate_handshake
+        self._last_handshake: Optional[tuple[str, HandshakeResult]] = None
 
     def start(
         self,
@@ -77,8 +78,9 @@ class SimulatorManager:
             else:
                 handshake_simulated = self._simulate_handshake or not should_run_runtime
             handshake = perform_handshake(session_config, simulate=handshake_simulated)
+            self._last_handshake = (config.name, handshake)
             if not handshake.success:
-                raise RuntimeError(handshake.error or "Handshake failed")
+                return handshake
             runtime: Optional[CIPIORuntime] = None
             if should_run_runtime:
                 session = self._session_factory(session_config, config)
@@ -113,6 +115,10 @@ class SimulatorManager:
     def active(self) -> Optional[ActiveSimulation]:
         with self._lock:
             return self._active
+
+    def last_handshake(self) -> Optional[tuple[str, HandshakeResult]]:
+        with self._lock:
+            return self._last_handshake
 
     def ensure_config_mutable(self, config_name: str) -> None:
         """Ensure the configuration is not active before mutating metadata."""
@@ -169,6 +175,22 @@ def _detect_network_interfaces() -> List[Dict[str, str]]:
     return interfaces
 
 
+_HANDSHAKE_LABELS = {
+    HandshakePhase.TCP_CONNECT: "TCP handshake",
+    HandshakePhase.ENIP_SESSION: "ENIP session",
+    HandshakePhase.CIP_FORWARD_OPEN: "CIP forward open",
+}
+
+
+def _format_handshake_failure(handshake: HandshakeResult) -> str:
+    failure = next((step for step in handshake.steps if not step.success), None)
+    detail = handshake.error or (failure.detail if failure else "Unknown error")
+    if failure is None:
+        return f"Handshake failed: {detail}"
+    label = _HANDSHAKE_LABELS.get(failure.phase, failure.phase.value)
+    return f"{label} failed: {detail}"
+
+
 def get_app(
     store: Optional[ConfigurationStore] = None,
     manager: Optional[SimulatorManager] = None,
@@ -202,11 +224,18 @@ def get_app(
         if current is None and configs:
             current = configs[0]
         assembly_groups = {"output": [], "input": []}
+        handshake_result: Optional[HandshakeResult] = None
         if current:
             for assembly in current.assemblies:
                 direction = (assembly.direction or "").lower()
                 key = "input" if direction in {"input", "in"} else "output"
                 assembly_groups[key].append(assembly)
+            if active and active.configuration_name == current.name:
+                handshake_result = active.handshake
+            else:
+                last_handshake = manager.last_handshake()
+                if last_handshake and last_handshake[0] == current.name:
+                    handshake_result = last_handshake[1]
         return templates.TemplateResponse(
             "index.html",
             {
@@ -214,9 +243,11 @@ def get_app(
                 "configs": configs,
                 "current": current,
                 "active": active,
+                "handshake_result": handshake_result,
                 "assembly_groups": assembly_groups,
                 "signal_types": CIP_SIGNAL_TYPES,
                 "network_interfaces": _detect_network_interfaces(),
+                "handshake_labels": {phase.value: label for phase, label in _HANDSHAKE_LABELS.items()},
                 "message": message,
                 "error": error,
             },
@@ -245,6 +276,8 @@ def get_app(
             handshake = manager.start(config, store)
         except RuntimeError as exc:
             return redirect("/", error=str(exc))
+        if not handshake.success:
+            return redirect("/", error=_format_handshake_failure(handshake))
         return redirect(
             "/",
             message=f"Simulator started for {name}. Handshake duration {handshake.duration_ms:.2f}ms.",
