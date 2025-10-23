@@ -378,7 +378,26 @@ class SimulatorConfiguration:
             return None
 
         def _direction(value: Optional[str]) -> str:
-            return (value or "").strip().lower()
+            text = (value or "").strip().lower()
+            mapping = {
+                "in": "input",
+                "input": "input",
+                "t->o": "input",
+                "t_to_o": "input",
+                "t2o": "input",
+                "to": "input",
+                "target_to_originator": "input",
+                "out": "output",
+                "output": "output",
+                "o->t": "output",
+                "o_to_t": "output",
+                "o2t": "output",
+                "ot": "output",
+                "originator_to_target": "output",
+                "config": "config",
+                "configuration": "config",
+            }
+            return mapping.get(text, text)
 
         inputs = [
             assembly
@@ -415,12 +434,32 @@ class SimulatorConfiguration:
         if isinstance(overrides_raw, dict):
             overrides = dict(overrides_raw)
 
-        application_instance = overrides.get("application_instance")
+        def _parse_override_int(key: str) -> Optional[int]:
+            if key not in overrides:
+                return None
+            try:
+                parsed = int(str(overrides[key]), 0)
+            except Exception as exc:  # pragma: no cover - defensive
+                raise ConfigurationError(
+                    f"Forward-open override '{key}' must be numeric."
+                ) from exc
+            if parsed < 0:
+                raise ConfigurationError(
+                    f"Forward-open override '{key}' cannot be negative."
+                )
+            return parsed
+
+        application_instance = _parse_override_int("application_instance")
         if application_instance is None:
             application_instance = 0x01
 
-        t_to_o_instance = overrides.get("t_to_o_instance", input_assembly.assembly_id)
-        o_to_t_instance = overrides.get("o_to_t_instance", output_assembly.assembly_id)
+        t_to_o_instance = _parse_override_int("t_to_o_instance")
+        if t_to_o_instance is None:
+            t_to_o_instance = input_assembly.assembly_id
+
+        o_to_t_instance = _parse_override_int("o_to_t_instance")
+        if o_to_t_instance is None:
+            o_to_t_instance = output_assembly.assembly_id
 
         def _header_bytes(key: str, default: int) -> int:
             value = overrides.get(key)
@@ -445,13 +484,15 @@ class SimulatorConfiguration:
         default_o_to_t_size = base_o_to_t + o_to_t_header
         default_t_to_o_size = base_t_to_o + t_to_o_header
 
+        application_class = _parse_override_int("application_class")
+        if application_class is None:
+            application_class = 0x04
+
         metadata: Dict[str, Any] = {
-            "application_class": overrides.get("application_class", 0x04),
+            "application_class": application_class,
             "application_instance": application_instance,
             "o_to_t_instance": o_to_t_instance,
             "t_to_o_instance": t_to_o_instance,
-            "o_to_t_size": overrides.get("o_to_t_size", max(1, default_o_to_t_size)),
-            "t_to_o_size": overrides.get("t_to_o_size", max(1, default_t_to_o_size)),
             "o_to_t_connection_type": overrides.get(
                 "o_to_t_connection_type", "point_to_point"
             ),
@@ -464,7 +505,8 @@ class SimulatorConfiguration:
             "transport_type_trigger": overrides.get("transport_type_trigger", 0x01),
         }
 
-        configuration_point = overrides.get("configuration_point")
+        configuration_point_override = _parse_override_int("configuration_point")
+        configuration_point = configuration_point_override
         if configuration_point is None and configuration is not None:
             configuration_point = configuration.assembly_id
         if configuration_point is not None:
@@ -476,9 +518,61 @@ class SimulatorConfiguration:
                 connection_points.append(point)
         if configuration_point is not None and configuration_point not in connection_points:
             connection_points.append(configuration_point)
-        metadata["connection_points"] = overrides.get(
-            "connection_points", connection_points
+        override_o_to_t_size = _parse_override_int("o_to_t_size")
+        override_t_to_o_size = _parse_override_int("t_to_o_size")
+
+        metadata["o_to_t_size"] = max(
+            max(1, default_o_to_t_size), override_o_to_t_size or 0
         )
+        metadata["t_to_o_size"] = max(
+            max(1, default_t_to_o_size), override_t_to_o_size or 0
+        )
+
+        override_points = overrides.get("connection_points")
+        parsed_points: List[int] = []
+        if override_points is not None:
+            try:
+                iterable = list(override_points)
+            except TypeError as exc:  # pragma: no cover - defensive
+                raise ConfigurationError(
+                    "Forward-open override 'connection_points' must be an iterable."
+                ) from exc
+            for index, value in enumerate(iterable):
+                try:
+                    point = int(str(value), 0)
+                except Exception as exc:  # pragma: no cover - defensive
+                    raise ConfigurationError(
+                        f"Forward-open override 'connection_points[{index}]' must be numeric."
+                    ) from exc
+                if point < 0:
+                    raise ConfigurationError(
+                        "Forward-open connection points cannot be negative."
+                    )
+                if point not in parsed_points:
+                    parsed_points.append(point)
+        connection_points = parsed_points or connection_points
+
+        required_order = [t_to_o_instance, o_to_t_instance]
+        extras: List[int] = []
+        for point in connection_points:
+            if point in required_order:
+                continue
+            if configuration_point is not None and point == configuration_point:
+                continue
+            if point not in extras:
+                extras.append(point)
+
+        ordered_points: List[int] = []
+        for point in required_order:
+            if point not in ordered_points:
+                ordered_points.append(point)
+        if configuration_point is not None and configuration_point not in ordered_points:
+            ordered_points.append(configuration_point)
+        for point in extras:
+            if point not in ordered_points:
+                ordered_points.append(point)
+
+        metadata["connection_points"] = ordered_points
 
         metadata["o_to_t_header_bytes"] = o_to_t_header
         metadata["t_to_o_header_bytes"] = t_to_o_header
@@ -490,7 +584,6 @@ class SimulatorConfiguration:
             "vendor_id",
             "originator_serial",
             "timeout_multiplier",
-            "connection_points",
             "use_large_forward_open",
         )
         for key in optional_keys:

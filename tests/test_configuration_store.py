@@ -97,6 +97,35 @@ def test_forward_open_header_overrides() -> None:
     assert metadata["o_to_t_header_bytes"] == 0
 
 
+def test_forward_open_overrides_are_sanitized() -> None:
+    config = SimulatorConfiguration.from_dict(
+        {
+            "name": "Runtime",
+            "target": {"ip": "10.0.0.10", "multicast": True},
+            "metadata": {
+                "forward_open": {
+                    "o_to_t_size": 1,
+                    "t_to_o_size": 2,
+                    "connection_points": [200, 100],
+                }
+            },
+            "assemblies": [
+                {"id": 1, "name": "Config", "direction": "config", "size_bits": 16},
+                {"id": 100, "name": "Inputs", "direction": "input", "size_bits": 32},
+                {"id": 200, "name": "Outputs", "direction": "output", "size_bits": 8},
+            ],
+        }
+    )
+
+    metadata = config.build_forward_open_metadata()
+    assert metadata is not None
+    # Defaults should win over undersized overrides while preserving multicast choice.
+    assert metadata["t_to_o_size"] == 12
+    assert metadata["o_to_t_size"] == 5
+    # Connection points should start with T->O, then O->T, followed by the config point.
+    assert metadata["connection_points"] == [100, 200, 1]
+
+
 def test_upsert_and_reload(tmp_path: Path) -> None:
     storage = tmp_path / "configs.json"
     store = ConfigurationStore(storage_path=storage)
