@@ -2,10 +2,17 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from pycipsim.config_store import ConfigurationStore, SimulatorConfiguration
+import pytest
+
+from pycipsim.config_store import (
+    ConfigurationError,
+    ConfigurationStore,
+    SimulatorConfiguration,
+)
+from pycipsim.configuration import AssemblyDefinition
 
 
-def _sample_configuration() -> SimulatorConfiguration:
+def _sample_configuration(*, direction: str = "input") -> SimulatorConfiguration:
     data = {
         "name": "DemoConfig",
         "target": {
@@ -18,7 +25,7 @@ def _sample_configuration() -> SimulatorConfiguration:
             {
                 "id": 100,
                 "name": "Input",
-                "direction": "input",
+                "direction": direction,
                 "signals": [
                     {"name": "SignalA", "offset": 0, "type": "BOOL", "value": "0"},
                     {"name": "SignalB", "offset": 1, "type": "INT", "value": "5"},
@@ -45,7 +52,7 @@ def test_upsert_and_reload(tmp_path: Path) -> None:
 def test_signal_updates_persist(tmp_path: Path) -> None:
     storage = tmp_path / "configs.json"
     store = ConfigurationStore(storage_path=storage)
-    config = _sample_configuration()
+    config = _sample_configuration(direction="output")
     store.upsert(config)
 
     store.update_signal_value("DemoConfig", 100, "SignalA", "1")
@@ -58,3 +65,75 @@ def test_signal_updates_persist(tmp_path: Path) -> None:
     signal_b = updated.find_signal(100, "SignalB")
     assert signal_b.signal_type == "DINT"
     assert signal_b.value is None
+
+
+def test_signal_value_update_blocked_for_input(tmp_path: Path) -> None:
+    storage = tmp_path / "configs.json"
+    store = ConfigurationStore(storage_path=storage)
+    config = _sample_configuration(direction="input")
+    store.upsert(config)
+
+    with pytest.raises(ConfigurationError):
+        store.update_signal_value("DemoConfig", 100, "SignalA", "1")
+
+
+def test_remove_signal_persists(tmp_path: Path) -> None:
+    storage = tmp_path / "configs.json"
+    store = ConfigurationStore(storage_path=storage)
+    config = _sample_configuration(direction="output")
+    store.upsert(config)
+
+    store.remove_signal("DemoConfig", 100, "SignalA")
+
+    reloaded = ConfigurationStore(storage_path=storage)
+    updated = reloaded.get("DemoConfig")
+    remaining = [signal.name for signal in updated.find_assembly(100).signals]
+    assert remaining == ["SignalB"]
+
+
+def test_update_assembly_metadata(tmp_path: Path) -> None:
+    storage = tmp_path / "configs.json"
+    store = ConfigurationStore(storage_path=storage)
+    config = _sample_configuration(direction="output")
+    config.assemblies.append(
+        AssemblyDefinition(
+            assembly_id=200,
+            name="Second",
+            direction="input",
+            signals=[],
+        )
+    )
+    store.upsert(config)
+
+    updated = store.update_assembly(
+        "DemoConfig",
+        100,
+        new_id="300",
+        direction="input",
+    )
+
+    assert updated.assembly_id == 300
+    assert updated.direction == "input"
+
+    reloaded = ConfigurationStore(storage_path=storage)
+    refreshed = reloaded.get("DemoConfig")
+    assert refreshed.find_assembly(300).direction == "input"
+    assert refreshed.find_assembly(200).direction == "input"
+
+
+def test_update_assembly_rejects_duplicate_id(tmp_path: Path) -> None:
+    storage = tmp_path / "configs.json"
+    store = ConfigurationStore(storage_path=storage)
+    config = _sample_configuration(direction="output")
+    config.assemblies.append(
+        AssemblyDefinition(
+            assembly_id=150,
+            name="Other",
+            direction="output",
+            signals=[],
+        )
+    )
+    store.upsert(config)
+
+    with pytest.raises(ConfigurationError):
+        store.update_assembly("DemoConfig", 100, new_id="150", direction="output")

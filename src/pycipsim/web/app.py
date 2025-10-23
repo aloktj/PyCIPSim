@@ -10,7 +10,7 @@ from typing import Optional
 from urllib.parse import urlencode
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
 
 from ..config_store import (
@@ -66,10 +66,15 @@ class SimulatorManager:
         with self._lock:
             return self._active
 
-    def ensure_type_mutable(self, config_name: str) -> None:
+    def ensure_config_mutable(self, config_name: str) -> None:
+        """Ensure the configuration is not active before mutating metadata."""
+
         active = self.active()
         if active and active.configuration_name == config_name:
-            raise RuntimeError("Signal types are locked while the simulator is running.")
+            raise RuntimeError("Configuration is locked while the simulator is running.")
+
+    def ensure_type_mutable(self, config_name: str) -> None:
+        self.ensure_config_mutable(config_name)
 
 
 def _templates() -> Jinja2Templates:
@@ -109,6 +114,12 @@ def get_app(
                 current = None
         if current is None and configs:
             current = configs[0]
+        assembly_groups = {"output": [], "input": []}
+        if current:
+            for assembly in current.assemblies:
+                direction = (assembly.direction or "").lower()
+                key = "input" if direction in {"input", "in"} else "output"
+                assembly_groups[key].append(assembly)
         return templates.TemplateResponse(
             "index.html",
             {
@@ -116,6 +127,7 @@ def get_app(
                 "configs": configs,
                 "current": current,
                 "active": active,
+                "assembly_groups": assembly_groups,
                 "message": message,
                 "error": error,
             },
@@ -162,24 +174,6 @@ def get_app(
             return redirect("/", error="Configuration not found")
         return redirect(f"/?selected={name}")
 
-    @app.post("/configs/{name}/assemblies/{assembly_id}/signals/{signal_name}/type")
-    async def update_signal_type(
-        name: str,
-        assembly_id: int,
-        signal_name: str,
-        signal_type: str = Form(...),
-    ) -> RedirectResponse:
-        try:
-            manager.ensure_type_mutable(name)
-            store.update_signal_type(name, assembly_id, signal_name, signal_type)
-        except RuntimeError as exc:
-            return redirect("/", error=str(exc))
-        except ConfigurationNotFoundError:
-            return redirect("/", error="Configuration not found")
-        except ConfigurationError as exc:
-            return redirect("/", error=str(exc))
-        return redirect("/", message=f"Signal '{signal_name}' type updated to {signal_type}.")
-
     @app.post("/configs/{name}/assemblies/{assembly_id}/signals/{signal_name}/value")
     async def update_signal_value(
         name: str,
@@ -197,6 +191,136 @@ def get_app(
             return redirect("/", error=str(exc))
         message = "Signal value cleared." if action == "clear" else f"Signal '{signal_name}' value updated."
         return redirect("/", message=message)
+
+    @app.post("/configs/{name}/target")
+    async def update_target(
+        name: str,
+        target_ip: str = Form(...),
+        target_port: str = Form(...),
+        receive_address: Optional[str] = Form(None),
+        multicast: Optional[str] = Form(None),
+    ) -> RedirectResponse:
+        try:
+            manager.ensure_config_mutable(name)
+            store.update_target(
+                name,
+                target_ip=target_ip,
+                target_port=target_port,
+                receive_address=receive_address,
+                multicast=bool(multicast),
+            )
+        except RuntimeError as exc:
+            return redirect("/", error=str(exc))
+        except ConfigurationNotFoundError:
+            return redirect("/", error="Configuration not found")
+        except ConfigurationError as exc:
+            return redirect("/", error=str(exc))
+        return redirect("/", message=f"Target for '{name}' updated.")
+
+    @app.post("/configs/{name}/assemblies/{assembly_id}/signals/{signal_name}/details")
+    async def update_signal_details(
+        name: str,
+        assembly_id: int,
+        signal_name: str,
+        new_name: str = Form(...),
+        offset: str = Form(...),
+        signal_type: str = Form(...),
+    ) -> RedirectResponse:
+        try:
+            manager.ensure_config_mutable(name)
+            store.update_signal_details(
+                name,
+                assembly_id,
+                signal_name,
+                new_name=new_name,
+                offset=offset,
+                signal_type=signal_type,
+            )
+        except RuntimeError as exc:
+            return redirect("/", error=str(exc))
+        except ConfigurationNotFoundError:
+            return redirect("/", error="Configuration not found")
+        except ConfigurationError as exc:
+            return redirect("/", error=str(exc))
+        return redirect("/", message=f"Signal '{signal_name}' updated.")
+
+    @app.post("/configs/{name}/assemblies/{assembly_id}/metadata")
+    async def update_assembly_metadata(
+        name: str,
+        assembly_id: int,
+        new_id: str = Form(...),
+        direction: str = Form(...),
+    ) -> RedirectResponse:
+        try:
+            manager.ensure_config_mutable(name)
+            assembly = store.update_assembly(
+                name,
+                assembly_id,
+                new_id=new_id,
+                direction=direction,
+            )
+        except RuntimeError as exc:
+            return redirect("/", error=str(exc))
+        except ConfigurationNotFoundError:
+            return redirect("/", error="Configuration not found")
+        except ConfigurationError as exc:
+            return redirect("/", error=str(exc))
+        message = f"Assembly '{assembly.name}' updated."
+        return redirect("/", message=message)
+
+    @app.post("/configs/{name}/assemblies/{assembly_id}/signals/add")
+    async def add_signal(
+        name: str,
+        assembly_id: int,
+        new_name: str = Form(...),
+        offset: str = Form(...),
+        signal_type: str = Form(...),
+        position: str = Form("after"),
+        relative_signal: Optional[str] = Form(None),
+    ) -> RedirectResponse:
+        try:
+            manager.ensure_config_mutable(name)
+            store.add_signal(
+                name,
+                assembly_id,
+                new_name=new_name,
+                offset=offset,
+                signal_type=signal_type,
+                position=position,
+                relative_signal=relative_signal,
+            )
+        except RuntimeError as exc:
+            return redirect("/", error=str(exc))
+        except ConfigurationNotFoundError:
+            return redirect("/", error="Configuration not found")
+        except ConfigurationError as exc:
+            return redirect("/", error=str(exc))
+        return redirect("/", message=f"Signal '{new_name}' added.")
+
+    @app.post("/configs/{name}/assemblies/{assembly_id}/signals/{signal_name}/delete")
+    async def remove_signal(name: str, assembly_id: int, signal_name: str) -> RedirectResponse:
+        try:
+            manager.ensure_config_mutable(name)
+            store.remove_signal(name, assembly_id, signal_name)
+        except RuntimeError as exc:
+            return redirect("/", error=str(exc))
+        except ConfigurationNotFoundError:
+            return redirect("/", error="Configuration not found")
+        except ConfigurationError as exc:
+            return redirect("/", error=str(exc))
+        return redirect("/", message=f"Signal '{signal_name}' removed.")
+
+    @app.get("/configs/{name}/export")
+    async def export_configuration(name: str) -> Response:
+        try:
+            config = store.get(name)
+        except ConfigurationNotFoundError:
+            raise HTTPException(status_code=404, detail="Configuration not found")
+        payload = json.dumps(config.to_dict(), indent=2)
+        headers = {
+            "Content-Disposition": f"attachment; filename={name}.json",
+        }
+        return Response(content=payload, media_type="application/json", headers=headers)
 
     return app
 
