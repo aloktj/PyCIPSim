@@ -5,7 +5,8 @@
     <title>PyCIPSim Web</title>
     <style>
       body { font-family: Arial, sans-serif; margin: 2rem; }
-      header { display: flex; justify-content: space-between; align-items: center; }
+      header { display: flex; justify-content: space-between; align-items: center; gap: 1rem; }
+      header .header-actions { display: flex; gap: 0.5rem; align-items: center; }
       table { border-collapse: collapse; width: 100%; margin-bottom: 2rem; }
       th, td { border: 1px solid #ccc; padding: 0.5rem; text-align: left; }
       th { background: #f5f5f5; }
@@ -14,17 +15,103 @@
       .status.error { background: #ffebee; color: #b71c1c; }
       form.inline { display: inline; }
       .signal-actions form { display: inline; margin-right: 0.5rem; }
+      .signal-actions input[type="text"] { width: 8rem; }
       .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 2rem; }
       .config-list ul { list-style: none; padding: 0; }
       .config-list li { margin-bottom: 0.5rem; }
       .config-list form { display: inline; }
       .handshake-steps { margin-top: 1rem; }
+      .handshake-steps ul { list-style: none; padding: 0; margin: 0.5rem 0 0; }
+      .handshake-steps li { padding: 0.25rem 0; }
+      .handshake-steps .step-success { color: #256029; }
+      .handshake-steps .step-failure { color: #b71c1c; font-weight: bold; }
+      .handshake-steps .step-detail { font-size: 0.9rem; color: #555; display: block; }
+      .handshake-steps .overall-note { margin-top: 0.5rem; font-style: italic; }
+      .handshake-steps .overall-note.error { font-style: normal; color: #b71c1c; font-weight: bold; }
+      .target-form { margin-bottom: 1.5rem; }
+      .target-form label { display: block; margin-bottom: 0.5rem; }
+      .target-form input[type="text"],
+      .target-form input[type="number"] { width: 14rem; }
+      .target-form .inline-field { display: inline-flex; flex-direction: column; margin-right: 1rem; }
+      .forward-open-form { margin-bottom: 2rem; }
+      .forward-open-form h3 { margin-bottom: 0.5rem; }
+      .forward-open-form .form-note { margin: 0 0 0.75rem; color: #555; font-size: 0.9rem; }
+      .forward-open-form .form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr)); gap: 1rem; }
+      .forward-open-form label { display: flex; flex-direction: column; font-size: 0.9rem; }
+      .forward-open-form input[type="text"],
+      .forward-open-form select { width: 100%; }
+      .checkbox-inline { display: inline-flex; align-items: center; gap: 0.5rem; margin-top: 0.75rem; }
+      .form-actions { margin-top: 1rem; }
+      .icon-button {
+        cursor: pointer;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 2rem;
+        height: 2rem;
+        border: 1px solid #999;
+        border-radius: 50%;
+        font-size: 1.25rem;
+        background: #fafafa;
+        text-decoration: none;
+      }
+      .icon-button:hover { background: #f0f0f0; }
+      .add-summary { text-decoration: none; }
+      .remove-button {
+        border-color: #b71c1c;
+        color: #b71c1c;
+      }
+      .remove-button:hover {
+        background: #ffebee;
+      }
+      details.add-signal { margin-top: 0.5rem; }
+      details.add-signal form { margin-top: 0.75rem; display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: flex-end; }
+      details.add-signal label { display: flex; flex-direction: column; font-size: 0.9rem; }
+      details.add-signal input[type="text"],
+      details.add-signal input[type="number"] { width: 10rem; }
+      .insert-cell { width: 5.5rem; text-align: center; }
+      .insert-cell .row-actions { display: flex; align-items: center; justify-content: center; gap: 0.5rem; }
+      .insert-cell details { display: inline-block; }
+      .disabled-note { font-style: italic; color: #666; margin-top: 0.5rem; }
+      .sr-only {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        padding: 0;
+        margin: -1px;
+        overflow: hidden;
+        clip: rect(0, 0, 0, 0);
+        border: 0;
+      }
+      .assembly-group { margin-bottom: 2rem; }
+      .assembly-card { margin-bottom: 1.5rem; }
+      .assembly-header { display: flex; align-items: center; justify-content: space-between; gap: 1rem; flex-wrap: wrap; }
+      .assembly-header h4 { margin: 0; }
+      .assembly-group-header { display: flex; align-items: center; justify-content: space-between; gap: 1rem; flex-wrap: wrap; }
+      .assembly-controls { display: flex; gap: 0.75rem; align-items: flex-end; flex-wrap: wrap; }
+      .assembly-actions { display: flex; align-items: center; gap: 0.5rem; }
+      .assembly-metadata-form { display: flex; gap: 0.75rem; align-items: flex-end; flex-wrap: wrap; }
+      .assembly-metadata-form label { display: flex; flex-direction: column; font-size: 0.9rem; }
+      .assembly-metadata-form input[type="text"],
+      .assembly-metadata-form input[type="number"],
+      .assembly-metadata-form select { width: 8rem; }
+      .assembly-metadata-form button { height: 2.2rem; }
+      details.add-assembly { display: inline-block; }
+      details.add-assembly form { margin-top: 0.75rem; display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: flex-end; }
+      details.add-assembly label { display: flex; flex-direction: column; font-size: 0.9rem; }
+      details.add-assembly input[type="text"],
+      details.add-assembly input[type="number"],
+      details.add-assembly select { width: 10rem; }
+      .padding-row { background: #f9f9f9; color: #555; font-style: italic; }
     </style>
   </head>
   <body>
     <header>
       <h1>PyCIPSim Web Simulator</h1>
-      <div>
+      <div class="header-actions">
+        {% if current %}
+          <a href="/configs/{{ current.name }}/export">Export JSON</a>
+        {% endif %}
         {% if active %}
           <form method="post" action="/stop" class="inline">
             <button type="submit">Stop Simulator</button>
@@ -71,63 +158,463 @@
 
       <div class="config-detail">
         {% if current %}
+          {% set is_running = active and active.configuration_name == current.name %}
           <h2>Configuration: {{ current.name }}</h2>
-          <p><strong>Target IP:</strong> {{ current.target_ip }} | <strong>Port:</strong> {{ current.target_port }}</p>
-          {% if current.receive_address %}
-            <p><strong>Receive Address:</strong> {{ current.receive_address }} {% if current.multicast %}(Multicast){% endif %}</p>
-          {% endif %}
+          <div class="target-form">
+            <form method="post" action="/configs/{{ current.name }}/target">
+              <div class="inline-field">
+                <label>Target IP
+                  <input type="text" name="target_ip" value="{{ current.target_ip }}" {% if is_running %}disabled{% endif %} />
+                </label>
+              </div>
+              <div class="inline-field">
+                <label>Port
+                  <input type="number" name="target_port" value="{{ current.target_port }}" {% if is_running %}disabled{% endif %} />
+                </label>
+              </div>
+              <div class="inline-field">
+                <label>Receive Address
+                  <input type="text" name="receive_address" value="{{ current.receive_address or '' }}" {% if is_running %}disabled{% endif %} />
+                </label>
+              </div>
+              <div class="inline-field">
+                <label>Network Interface
+                  <select name="network_interface" {% if is_running %}disabled{% endif %}>
+                    <option value="" {% if not current.network_interface %}selected{% endif %}>Auto</option>
+                    {% for iface in network_interfaces %}
+                      <option value="{{ iface.name }}" {% if current.network_interface == iface.name %}selected{% endif %}>{{ iface.label }}</option>
+                    {% endfor %}
+                  </select>
+                </label>
+              </div>
+              <div class="inline-field">
+                <label>Connection Mode
+                  <select name="runtime_mode" {% if is_running %}disabled{% endif %}>
+                    <option value="simulated" {% if current.runtime_mode != 'live' %}selected{% endif %}>Simulated</option>
+                    <option value="live" {% if current.runtime_mode == 'live' %}selected{% endif %}>Live</option>
+                  </select>
+                </label>
+              </div>
+              <div class="inline-field">
+                <label>Allowed Hosts
+                  <input type="text" name="allowed_hosts" value="{{ current.allowed_hosts_text }}" {% if is_running %}disabled{% endif %} placeholder="Comma-separated" />
+                </label>
+              </div>
+              <label>
+                <input type="checkbox" name="multicast" value="on" {% if current.multicast %}checked{% endif %} {% if is_running %}disabled{% endif %} />
+                Multicast
+              </label>
+              <label>
+                <input type="checkbox" name="allow_external" value="on" {% if current.allow_external %}checked{% endif %} {% if is_running %}disabled{% endif %} />
+                Allow external targets
+              </label>
+              <div>
+                <button type="submit" {% if is_running %}disabled{% endif %}>Save Target</button>
+              </div>
+            </form>
+            <p class="disabled-note">
+              Connection mode is
+              {% if current.runtime_mode == 'live' %}
+                <strong>Live</strong> (attempts real TCP/ENIP/CIP traffic)
+              {% else %}
+                <strong>Simulated</strong> (no network connections are opened)
+              {% endif %}.
+            </p>
+            {% if is_running %}
+              <p class="disabled-note">Target fields are locked while the simulator is running.</p>
+            {% endif %}
+          </div>
 
-          {% if active and active.configuration_name == current.name %}
+          {% set fo_effective = forward_open_effective or {} %}
+          {% set fo_overrides = forward_open_overrides or {} %}
+          <div class="forward-open-form">
+            <h3>Forward Open Parameters</h3>
+            <p class="form-note">
+              Values saved here override the automatically generated forward-open request. Leave a field blank to fall back to the
+              simulator defaults.
+            </p>
+            <form method="post" action="/configs/{{ current.name }}/forward-open">
+              <div class="form-grid">
+                <label>Application Class
+                  <input type="text" name="application_class" value="{{ fo_overrides.get('application_class', fo_effective.get('application_class', '')) }}" placeholder="e.g. 0x04" {% if is_running %}disabled{% endif %} />
+                </label>
+                <label>Application Instance
+                  <input type="text" name="application_instance" value="{{ fo_overrides.get('application_instance', fo_effective.get('application_instance', '')) }}" placeholder="e.g. 1" {% if is_running %}disabled{% endif %} />
+                </label>
+                <label>T→O Assembly Instance
+                  <input type="text" name="t_to_o_instance" value="{{ fo_overrides.get('t_to_o_instance', fo_effective.get('t_to_o_instance', '')) }}" placeholder="0x65" {% if is_running %}disabled{% endif %} />
+                </label>
+                <label>O→T Assembly Instance
+                  <input type="text" name="o_to_t_instance" value="{{ fo_overrides.get('o_to_t_instance', fo_effective.get('o_to_t_instance', '')) }}" placeholder="0x64" {% if is_running %}disabled{% endif %} />
+                </label>
+                <label>Configuration Assembly
+                  <input type="text" name="configuration_point" value="{{ fo_overrides.get('configuration_point', fo_effective.get('configuration_point', '')) }}" placeholder="Optional" {% if is_running %}disabled{% endif %} />
+                </label>
+                <label>Connection Points
+                  <input type="text" name="connection_points" value="{{ fo_overrides.get('connection_points') | join(', ') if fo_overrides.get('connection_points') else '' }}" placeholder="Comma-separated (e.g. 0x65,0x64)" {% if is_running %}disabled{% endif %} />
+                </label>
+                <label>O→T Size (bytes)
+                  <input type="text" name="o_to_t_size" value="{{ fo_overrides.get('o_to_t_size', fo_effective.get('o_to_t_size', '')) }}" placeholder="{{ fo_effective.get('o_to_t_size') }}" {% if is_running %}disabled{% endif %} />
+                </label>
+                <label>O→T Header Bytes
+                  <input type="text" name="o_to_t_header_bytes" value="{{ fo_overrides.get('o_to_t_header_bytes', fo_effective.get('o_to_t_header_bytes', '')) }}" placeholder="{{ fo_effective.get('o_to_t_header_bytes') }}" {% if is_running %}disabled{% endif %} />
+                </label>
+                <label>O→T Connection Type
+                  <select name="o_to_t_connection_type" {% if is_running %}disabled{% endif %}>
+                    {% set o_to_t_type = fo_overrides.get('o_to_t_connection_type', fo_effective.get('o_to_t_connection_type', 'point_to_point')) %}
+                    <option value="point_to_point" {% if o_to_t_type == 'point_to_point' %}selected{% endif %}>Point-to-point</option>
+                    <option value="multicast" {% if o_to_t_type == 'multicast' %}selected{% endif %}>Multicast</option>
+                  </select>
+                </label>
+                <label>T→O Size (bytes)
+                  <input type="text" name="t_to_o_size" value="{{ fo_overrides.get('t_to_o_size', fo_effective.get('t_to_o_size', '')) }}" placeholder="{{ fo_effective.get('t_to_o_size') }}" {% if is_running %}disabled{% endif %} />
+                </label>
+                <label>T→O Header Bytes
+                  <input type="text" name="t_to_o_header_bytes" value="{{ fo_overrides.get('t_to_o_header_bytes', fo_effective.get('t_to_o_header_bytes', '')) }}" placeholder="{{ fo_effective.get('t_to_o_header_bytes') }}" {% if is_running %}disabled{% endif %} />
+                </label>
+                <label>T→O Connection Type
+                  <select name="t_to_o_connection_type" {% if is_running %}disabled{% endif %}>
+                    {% set t_to_o_type = fo_overrides.get('t_to_o_connection_type', fo_effective.get('t_to_o_connection_type', 'multicast' if current.multicast else 'point_to_point')) %}
+                    <option value="point_to_point" {% if t_to_o_type == 'point_to_point' %}selected{% endif %}>Point-to-point</option>
+                    <option value="multicast" {% if t_to_o_type == 'multicast' %}selected{% endif %}>Multicast</option>
+                  </select>
+                </label>
+                <label>O→T RPI (µs)
+                  <input type="text" name="o_to_t_rpi_us" value="{{ fo_overrides.get('o_to_t_rpi_us', fo_effective.get('o_to_t_rpi_us', '')) }}" placeholder="200000" {% if is_running %}disabled{% endif %} />
+                </label>
+                <label>T→O RPI (µs)
+                  <input type="text" name="t_to_o_rpi_us" value="{{ fo_overrides.get('t_to_o_rpi_us', fo_effective.get('t_to_o_rpi_us', '')) }}" placeholder="200000" {% if is_running %}disabled{% endif %} />
+                </label>
+                <label>Timeout Multiplier
+                  <input type="text" name="timeout_multiplier" value="{{ fo_overrides.get('timeout_multiplier', fo_effective.get('timeout_multiplier', '')) }}" placeholder="0" {% if is_running %}disabled{% endif %} />
+                </label>
+                <label>Transport Type/Trigger
+                  <input type="text" name="transport_type_trigger" value="{{ fo_overrides.get('transport_type_trigger', fo_effective.get('transport_type_trigger', '')) }}" placeholder="0x01" {% if is_running %}disabled{% endif %} />
+                </label>
+                <label>Connection Serial Number
+                  <input type="text" name="connection_serial" value="{{ fo_overrides.get('connection_serial', fo_effective.get('connection_serial', '')) }}" placeholder="e.g. 0x936d" {% if is_running %}disabled{% endif %} />
+                </label>
+                <label>Originator Vendor ID
+                  <input type="text" name="vendor_id" value="{{ fo_overrides.get('vendor_id', fo_effective.get('vendor_id', '')) }}" placeholder="e.g. 0x0476" {% if is_running %}disabled{% endif %} />
+                </label>
+                <label>Originator Serial Number
+                  <input type="text" name="originator_serial" value="{{ fo_overrides.get('originator_serial', fo_effective.get('originator_serial', '')) }}" placeholder="e.g. 0x47" {% if is_running %}disabled{% endif %} />
+                </label>
+                <label>O→T Connection ID
+                  <input type="text" name="o_to_t_connection_id" value="{{ fo_overrides.get('o_to_t_connection_id', '') }}" placeholder="Optional" {% if is_running %}disabled{% endif %} />
+                </label>
+                <label>T→O Connection ID
+                  <input type="text" name="t_to_o_connection_id" value="{{ fo_overrides.get('t_to_o_connection_id', '') }}" placeholder="Optional" {% if is_running %}disabled{% endif %} />
+                </label>
+              </div>
+              <label class="checkbox-inline">
+                <input type="checkbox" name="use_large_forward_open" value="on" {% if fo_overrides.get('use_large_forward_open') %}checked{% endif %} {% if is_running %}disabled{% endif %} />
+                Use Large Forward Open (32-bit connection parameters)
+              </label>
+              <div class="form-actions">
+                <button type="submit" {% if is_running %}disabled{% endif %}>Save Forward Open</button>
+              </div>
+              {% if is_running %}
+                <p class="disabled-note">Forward-open fields are locked while the simulator is running.</p>
+              {% endif %}
+            </form>
+          </div>
+
+          {% set handshake = handshake_result %}
+          {% if handshake %}
             <div class="handshake-steps">
               <h3>Handshake Status</h3>
-              <p>Started at {{ active.started_at }} (UTC)</p>
+              {% if is_running %}
+                <p>Started at {{ active.started_at }} (UTC)</p>
+              {% else %}
+                <p>
+                  Last attempt {{ 'succeeded' if handshake.success else 'failed' }}
+                  in {{ '%.2f'|format(handshake.duration_ms) }} ms.
+                </p>
+              {% endif %}
               <ul>
-                {% for step in active.handshake.steps %}
-                  <li>{{ step.phase }} — {{ "Success" if step.success else "Failed" }} ({{ step.detail }})</li>
+                {% for step in handshake.steps %}
+                  {% set phase_key = step.phase.value if step.phase is not string else step.phase %}
+                  {% set label = handshake_labels.get(phase_key, phase_key.replace('_', ' ')|title) %}
+                  <li class="{{ 'step-success' if step.success else 'step-failure' }}">
+                    {{ label }} — {{ 'Success' if step.success else 'Failed' }}
+                    <span class="step-detail">{{ step.detail }}</span>
+                  </li>
                 {% endfor %}
               </ul>
+              {% if not handshake.success and handshake.error %}
+                <p class="overall-note error">Failure reason: {{ handshake.error }}</p>
+              {% endif %}
             </div>
           {% endif %}
 
-          {% for assembly in current.assemblies %}
-            <h3>Assembly {{ assembly.name }} (#{{ assembly.assembly_id }})</h3>
-            <table>
-              <thead>
-                <tr>
-                  <th>Offset</th>
-                  <th>Signal</th>
-                  <th>Type</th>
-                  <th>Value</th>
-                </tr>
-              </thead>
-              <tbody>
-                {% for signal in assembly.signals %}
-                  <tr>
-                    <td>{{ signal.offset }}</td>
-                    <td>{{ signal.name }}</td>
-                    <td>
-                      {% if active and active.configuration_name == current.name %}
-                        {{ signal.signal_type }}
+          {% set direction_order = ['output', 'input'] %}
+          {% for direction_key in direction_order %}
+            {% set assemblies = assembly_groups.get(direction_key, []) %}
+            <section class="assembly-group">
+              <div class="assembly-group-header">
+                <h3>{{ 'Output Assemblies' if direction_key == 'output' else 'Input Assemblies' }}</h3>
+                {% if not is_running %}
+                  <details class="add-assembly">
+                    <summary class="icon-button add-summary" title="Add assembly">+</summary>
+                    <form method="post" action="/configs/{{ current.name }}/assemblies/add">
+                      {% if assemblies %}
+                        <input type="hidden" name="position" value="after" />
+                        <input type="hidden" name="relative_assembly" value="{{ (assemblies|last).assembly_id }}" />
                       {% else %}
-                        <form method="post" action="/configs/{{ current.name }}/assemblies/{{ assembly.assembly_id }}/signals/{{ signal.name }}/type">
-                          <input type="text" name="signal_type" value="{{ signal.signal_type }}" />
-                          <button type="submit">Save Type</button>
-                        </form>
+                        <input type="hidden" name="position" value="end" />
                       {% endif %}
-                    </td>
-                    <td class="signal-actions">
-                      <form method="post" action="/configs/{{ current.name }}/assemblies/{{ assembly.assembly_id }}/signals/{{ signal.name }}/value">
-                        <input type="text" name="value" value="{{ signal.value or '' }}" />
-                        <button type="submit" name="action" value="set">Set</button>
-                        <button type="submit" name="action" value="clear">Clear</button>
-                      </form>
-                    </td>
-                  </tr>
+                      <label>Name
+                        <input type="text" name="assembly_name" required />
+                      </label>
+                      <label>Assembly ID
+                        <input type="text" name="assembly_id" required />
+                      </label>
+                      <label>Size (bits)
+                        <input type="number" name="size_bits" min="0" required />
+                      </label>
+                      <label>Direction
+                        <select name="direction">
+                          <option value="output" {% if direction_key == 'output' %}selected{% endif %}>Output</option>
+                          <option value="input" {% if direction_key == 'input' %}selected{% endif %}>Input</option>
+                        </select>
+                      </label>
+                      <button type="submit">Add Assembly</button>
+                    </form>
+                  </details>
+                {% endif %}
+              </div>
+              {% if assemblies %}
+                {% for assembly in assemblies %}
+                  {% set is_input_assembly = assembly.direction and assembly.direction|lower in ['input', 'in'] %}
+                  {% set user_signals = assembly.signals | selectattr('is_padding', 'equalto', False) | list %}
+                  <article class="assembly-card">
+                    <div class="assembly-header">
+                      <h4>
+                        Assembly {{ assembly.name }} (#{{ assembly.assembly_id }}{% if assembly.size_bits %}, {{ assembly.size_bits }} bits{% endif %})
+                      </h4>
+                      <div class="assembly-controls">
+                        <form
+                          method="post"
+                          action="/configs/{{ current.name }}/assemblies/{{ assembly.assembly_id }}/metadata"
+                          class="assembly-metadata-form"
+                        >
+                          <label>Assembly ID
+                            <input type="text" name="new_id" value="{{ assembly.assembly_id }}" {% if is_running %}disabled{% endif %} />
+                          </label>
+                          <label>Size (bits)
+                            <input type="number" name="size_bits" value="{{ assembly.size_bits }}" min="0" {% if is_running %}disabled{% endif %} />
+                          </label>
+                          <label>Direction
+                            <select name="direction" {% if is_running %}disabled{% endif %}>
+                              {% set direction_value = assembly.direction|lower if assembly.direction else 'output' %}
+                              <option value="output" {% if direction_value not in ['input', 'in'] %}selected{% endif %}>Output</option>
+                              <option value="input" {% if direction_value in ['input', 'in'] %}selected{% endif %}>Input</option>
+                            </select>
+                          </label>
+                          <button type="submit" {% if is_running %}disabled{% endif %}>Save Assembly</button>
+                        </form>
+                        {% if not is_running %}
+                          <div class="assembly-actions">
+                            <details class="add-assembly">
+                              <summary class="icon-button add-summary" title="Add assembly after">+</summary>
+                            <form method="post" action="/configs/{{ current.name }}/assemblies/add">
+                              <input type="hidden" name="position" value="after" />
+                              <input type="hidden" name="relative_assembly" value="{{ assembly.assembly_id }}" />
+                              <label>Name
+                                <input type="text" name="assembly_name" required />
+                              </label>
+                              <label>Assembly ID
+                                <input type="text" name="assembly_id" required />
+                              </label>
+                              <label>Size (bits)
+                                <input type="number" name="size_bits" min="0" required />
+                              </label>
+                              <label>Direction
+                                <select name="direction">
+                                  <option value="output" {% if direction_key == 'output' %}selected{% endif %}>Output</option>
+                                  <option value="input" {% if direction_key == 'input' %}selected{% endif %}>Input</option>
+                                </select>
+                                </label>
+                                <button type="submit">Add Assembly</button>
+                              </form>
+                            </details>
+                            <form
+                              method="post"
+                              action="/configs/{{ current.name }}/assemblies/{{ assembly.assembly_id }}/delete"
+                              class="inline"
+                            >
+                              <button type="submit" class="icon-button remove-button" title="Remove assembly">&minus;</button>
+                            </form>
+                          </div>
+                        {% endif %}
+                      </div>
+                    </div>
+                    {% if is_running %}
+                      <p class="disabled-note">Assembly metadata is locked while the simulator is running.</p>
+                    {% endif %}
+                    {% if not is_running %}
+                      <details class="add-signal">
+                        <summary class="icon-button add-summary" title="Add signal at start">+</summary>
+                        <form method="post" action="/configs/{{ current.name }}/assemblies/{{ assembly.assembly_id }}/signals/add">
+                          <input type="hidden" name="position" value="before" />
+                          {% if user_signals %}
+                            <input type="hidden" name="relative_signal" value="{{ user_signals[0].name }}" />
+                          {% else %}
+                            <input type="hidden" name="relative_signal" value="" />
+                          {% endif %}
+                          <label>Signal Name
+                            <input type="text" name="new_name" required />
+                          </label>
+                          <label>Offset
+                            <input type="number" name="offset" required />
+                          </label>
+                          <label>Type
+                            <select name="signal_type" required>
+                              {% for type_name in signal_types %}
+                                <option value="{{ type_name }}">{{ type_name }}</option>
+                              {% endfor %}
+                            </select>
+                          </label>
+                          <button type="submit">Add Signal</button>
+                        </form>
+                      </details>
+                    {% endif %}
+                    {% if not is_running %}
+                      <div class="sr-only" aria-hidden="true">
+                        {% for signal in user_signals %}
+                          {% set form_id = "signal-details-" ~ assembly.assembly_id ~ "-" ~ loop.index0 %}
+                          <form
+                            id="{{ form_id }}"
+                            method="post"
+                            action="/configs/{{ current.name }}/assemblies/{{ assembly.assembly_id }}/signals/{{ signal.name }}/details"
+                          ></form>
+                        {% endfor %}
+                      </div>
+                    {% endif %}
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>Offset</th>
+                          <th>Signal</th>
+                          <th>Type</th>
+                          <th>Value</th>
+                          <th class="insert-cell">Insert</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {% for signal in assembly.signals %}
+                          {% set form_id = "signal-details-" ~ assembly.assembly_id ~ "-" ~ loop.index0 %}
+                          <tr class="{% if signal.is_padding %}padding-row{% endif %}">
+                            <td>
+                              {% if is_running or signal.is_padding %}
+                                {{ signal.offset }}
+                              {% else %}
+                                <input form="{{ form_id }}" type="number" name="offset" value="{{ signal.offset }}" required />
+                              {% endif %}
+                            </td>
+                            <td>
+                              {% if is_running or signal.is_padding %}
+                                {{ signal.name }}
+                              {% else %}
+                                <input form="{{ form_id }}" type="text" name="new_name" value="{{ signal.name }}" required />
+                              {% endif %}
+                            </td>
+                            <td>
+                              {% if is_running or signal.is_padding %}
+                                {{ signal.signal_type }}
+                              {% else %}
+                                {% set ns = namespace(matched=false) %}
+                                <select form="{{ form_id }}" name="signal_type" required>
+                                  {% for type_name in signal_types %}
+                                    {% set is_selected = signal.signal_type and signal.signal_type|lower == type_name|lower %}
+                                    {% if is_selected %}{% set ns.matched = true %}{% endif %}
+                                    <option value="{{ type_name }}" {% if is_selected %}selected{% endif %}>{{ type_name }}</option>
+                                  {% endfor %}
+                                  {% if not ns.matched and signal.signal_type %}
+                                    <option value="{{ signal.signal_type }}" selected>{{ signal.signal_type }}</option>
+                                  {% endif %}
+                                </select>
+                                <button form="{{ form_id }}" type="submit">Save</button>
+                              {% endif %}
+                            </td>
+                            <td class="signal-actions">
+                              {% if signal.is_padding %}
+                                <input
+                                  type="text"
+                                  value="{{ signal.value if signal.value is not none else 0 }}"
+                                  readonly
+                                  disabled
+                                />
+                              {% elif is_input_assembly %}
+                                <input
+                                  type="text"
+                                  value="{{ signal.value if signal.value is not none else 0 }}"
+                                  readonly
+                                  disabled
+                                />
+                              {% else %}
+                                <form method="post" action="/configs/{{ current.name }}/assemblies/{{ assembly.assembly_id }}/signals/{{ signal.name }}/value">
+                                  <input type="text" name="value" value="{{ signal.value or '' }}" />
+                                  <button type="submit" name="action" value="set">Set</button>
+                                  <button type="submit" name="action" value="clear">Clear</button>
+                                </form>
+                              {% endif %}
+                            </td>
+                            <td class="insert-cell">
+                              {% if not is_running and not signal.is_padding %}
+                                <div class="row-actions">
+                                  <details class="add-signal">
+                                    <summary class="icon-button add-summary" title="Add signal after">+</summary>
+                                    <form method="post" action="/configs/{{ current.name }}/assemblies/{{ assembly.assembly_id }}/signals/add">
+                                      <input type="hidden" name="position" value="after" />
+                                      <input type="hidden" name="relative_signal" value="{{ signal.name }}" />
+                                      <label>Signal Name
+                                        <input type="text" name="new_name" required />
+                                      </label>
+                                      <label>Offset
+                                        <input type="number" name="offset" required />
+                                      </label>
+                                      <label>Type
+                                        <select name="signal_type" required>
+                                          {% for type_name in signal_types %}
+                                            <option value="{{ type_name }}">{{ type_name }}</option>
+                                          {% endfor %}
+                                        </select>
+                                      </label>
+                                      <button type="submit">Add Signal</button>
+                                    </form>
+                                  </details>
+                                  <form
+                                    method="post"
+                                    action="/configs/{{ current.name }}/assemblies/{{ assembly.assembly_id }}/signals/{{ signal.name }}/delete"
+                                    class="inline"
+                                  >
+                                    <button type="submit" class="icon-button remove-button" title="Remove signal">&minus;</button>
+                                  </form>
+                                </div>
+                              {% elif signal.is_padding %}
+                                &mdash;
+                              {% endif %}
+                            </td>
+                          </tr>
+                        {% endfor %}
+                        {% if not assembly.signals %}
+                          <tr>
+                            <td colspan="5">No signals defined.</td>
+                          </tr>
+                        {% endif %}
+                      </tbody>
+                    </table>
+                    {% if is_running %}
+                      <p class="disabled-note">Signal attributes are locked while the simulator is running. Use the value controls to update live data.</p>
+                    {% endif %}
+                  </article>
                 {% endfor %}
-              </tbody>
-            </table>
-          {% else %}
-            <p>No assemblies defined.</p>
+              {% else %}
+                <p>No {{ 'output' if direction_key == 'output' else 'input' }} assemblies defined.</p>
+              {% endif %}
+            </section>
           {% endfor %}
         {% else %}
           <p>Select or upload a configuration to begin.</p>
