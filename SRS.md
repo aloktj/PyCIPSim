@@ -77,6 +77,18 @@ It is assumed that users have access to Python development environments and can 
 2. The system shall present assemblies and signals in tabular form, showing offsets, types, and current values.
 3. The system shall prevent modification of signal types, offsets, and names while a simulation is running but permit payload value updates (set/clear) during execution.
 4. The system shall provide controls to start and stop the simulator using any saved configuration, updating the displayed handshake status accordingly.
+5. The system shall allow users to choose a host network interface for each configuration so live CIP connections originate from the selected adapter.
+
+### 3.7 Live CIP I/O Runtime
+1. The system shall establish real TCP, ENIP register session, and CIP forward-open handshakes on demand, keeping connections active for the duration of a simulation.
+2. The system shall maintain cyclic producer and consumer loops that publish output assembly images and listen for input assembly payloads at configured intervals for both unicast and multicast transports.
+3. The system shall propagate runtime edits to output assembly values onto the active connection, rebuilding payload buffers and transmitting the updated data within the next cyclic interval.
+4. The system shall decode inbound assembly payloads into configured signals, update read-only values surfaced in the UI, and persist the captured state for later export.
+5. The system shall monitor connection health, recover from timeouts or aborts, and perform orderly forward-close or session teardown when the simulator stops.
+
+**Implementation note:** The current runtime satisfies items 1–4 for unicast sessions by streaming assembly images through the web-managed CIPSession transport. Multicast delivery will be incorporated alongside the UDP adapters described in §4.5.
+Operators can continue running the simulator in simulated mode; selecting the live connection mode in the web UI enables the
+network-backed behaviour described above.
 
 ## 4. External Interface Requirements
 
@@ -102,6 +114,8 @@ The system shall be capable of handling at least 100 CIP message exchanges per s
 
 ### 5.2 Safety Requirements
 The system shall ensure that simulated traffic remains within user-defined network boundaries to prevent unintended interactions with production devices. Safeguards shall include explicit whitelists of reachable IP addresses and warning prompts before connecting to external networks.
+The web dashboard shall expose controls for managing the whitelist (including optional overrides) so operators can authorize
+remote lab equipment without editing configuration files manually.
 
 ### 5.3 Security Requirements
 The system shall avoid storing sensitive credentials in plain text by supporting environment variable configuration and secure credential storage mechanisms when available. Access controls shall restrict modification of simulation configurations to authorized users in shared environments.
