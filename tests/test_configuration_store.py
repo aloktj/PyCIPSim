@@ -65,6 +65,7 @@ def test_forward_open_metadata_generation() -> None:
     assert metadata["o_to_t_connection_type"] == "point_to_point"
     assert metadata["t_to_o_size"] == 4
     assert metadata["o_to_t_size"] == 1
+    assert metadata["connection_points"] == [100, 200, 1]
 
 
 def test_upsert_and_reload(tmp_path: Path) -> None:
