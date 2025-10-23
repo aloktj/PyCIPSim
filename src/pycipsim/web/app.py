@@ -266,6 +266,19 @@ def get_app(
             return redirect("/", error=str(exc))
         return redirect("/", message=f"Signal '{new_name}' added.")
 
+    @app.post("/configs/{name}/assemblies/{assembly_id}/signals/{signal_name}/delete")
+    async def remove_signal(name: str, assembly_id: int, signal_name: str) -> RedirectResponse:
+        try:
+            manager.ensure_config_mutable(name)
+            store.remove_signal(name, assembly_id, signal_name)
+        except RuntimeError as exc:
+            return redirect("/", error=str(exc))
+        except ConfigurationNotFoundError:
+            return redirect("/", error="Configuration not found")
+        except ConfigurationError as exc:
+            return redirect("/", error=str(exc))
+        return redirect("/", message=f"Signal '{signal_name}' removed.")
+
     @app.get("/configs/{name}/export")
     async def export_configuration(name: str) -> Response:
         try:

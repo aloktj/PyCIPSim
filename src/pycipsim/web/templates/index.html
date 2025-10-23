@@ -26,14 +26,35 @@
       .target-form input[type="text"],
       .target-form input[type="number"] { width: 14rem; }
       .target-form .inline-field { display: inline-flex; flex-direction: column; margin-right: 1rem; }
-      .add-summary { cursor: pointer; display: inline-flex; align-items: center; justify-content: center; width: 2rem; height: 2rem; border: 1px solid #999; border-radius: 50%; font-size: 1.25rem; background: #fafafa; }
-      .add-summary:hover { background: #f0f0f0; }
+      .icon-button {
+        cursor: pointer;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 2rem;
+        height: 2rem;
+        border: 1px solid #999;
+        border-radius: 50%;
+        font-size: 1.25rem;
+        background: #fafafa;
+        text-decoration: none;
+      }
+      .icon-button:hover { background: #f0f0f0; }
+      .add-summary { text-decoration: none; }
+      .remove-button {
+        border-color: #b71c1c;
+        color: #b71c1c;
+      }
+      .remove-button:hover {
+        background: #ffebee;
+      }
       details.add-signal { margin-top: 0.5rem; }
       details.add-signal form { margin-top: 0.75rem; display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: flex-end; }
       details.add-signal label { display: flex; flex-direction: column; font-size: 0.9rem; }
       details.add-signal input[type="text"],
       details.add-signal input[type="number"] { width: 10rem; }
-      .insert-cell { width: 4rem; text-align: center; }
+      .insert-cell { width: 5.5rem; text-align: center; }
+      .insert-cell .row-actions { display: flex; align-items: center; justify-content: center; gap: 0.5rem; }
       .insert-cell details { display: inline-block; }
       .disabled-note { font-style: italic; color: #666; margin-top: 0.5rem; }
       .sr-only {
@@ -150,7 +171,7 @@
             {% set is_input_assembly = assembly.direction and assembly.direction|lower in ['input', 'in'] %}
             {% if not is_running %}
               <details class="add-signal">
-                <summary class="add-summary" title="Add signal at start">+</summary>
+                <summary class="icon-button add-summary" title="Add signal at start">+</summary>
                 <form method="post" action="/configs/{{ current.name }}/assemblies/{{ assembly.assembly_id }}/signals/add">
                   <input type="hidden" name="position" value="before" />
                   <input type="hidden" name="relative_signal" value="{{ assembly.signals[0].name if assembly.signals else '' }}" />
@@ -233,44 +254,32 @@
                     </td>
                     <td class="insert-cell">
                       {% if not is_running %}
-                        <details class="add-signal">
-                          <summary class="add-summary" title="Add signal after">+</summary>
-                          <form method="post" action="/configs/{{ current.name }}/assemblies/{{ assembly.assembly_id }}/signals/add">
-                            <input type="hidden" name="position" value="after" />
-                            <input type="hidden" name="relative_signal" value="{{ signal.name }}" />
-                            <label>Signal Name
-                              <input type="text" name="new_name" required />
-                            </label>
-                            <label>Offset
-                              <input type="number" name="offset" required />
-                            </label>
-                            <label>Type
-                              <input type="text" name="signal_type" required />
-                            </label>
-                            <button type="submit">Add Signal</button>
+                        <div class="row-actions">
+                          <details class="add-signal">
+                            <summary class="icon-button add-summary" title="Add signal after">+</summary>
+                            <form method="post" action="/configs/{{ current.name }}/assemblies/{{ assembly.assembly_id }}/signals/add">
+                              <input type="hidden" name="position" value="after" />
+                              <input type="hidden" name="relative_signal" value="{{ signal.name }}" />
+                              <label>Signal Name
+                                <input type="text" name="new_name" required />
+                              </label>
+                              <label>Offset
+                                <input type="number" name="offset" required />
+                              </label>
+                              <label>Type
+                                <input type="text" name="signal_type" required />
+                              </label>
+                              <button type="submit">Add Signal</button>
+                            </form>
+                          </details>
+                          <form
+                            method="post"
+                            action="/configs/{{ current.name }}/assemblies/{{ assembly.assembly_id }}/signals/{{ signal.name }}/delete"
+                            class="inline"
+                          >
+                            <button type="submit" class="icon-button remove-button" title="Remove signal">&minus;</button>
                           </form>
-                        </details>
-                      {% endif %}
-                    </td>
-                    <td class="insert-cell">
-                      {% if not is_running %}
-                        <details class="add-signal">
-                          <summary class="add-summary" title="Add signal after">+</summary>
-                          <form method="post" action="/configs/{{ current.name }}/assemblies/{{ assembly.assembly_id }}/signals/add">
-                            <input type="hidden" name="position" value="after" />
-                            <input type="hidden" name="relative_signal" value="{{ signal.name }}" />
-                            <label>Signal Name
-                              <input type="text" name="new_name" required />
-                            </label>
-                            <label>Offset
-                              <input type="number" name="offset" required />
-                            </label>
-                            <label>Type
-                              <input type="text" name="signal_type" required />
-                            </label>
-                            <button type="submit">Add Signal</button>
-                          </form>
-                        </details>
+                        </div>
                       {% endif %}
                     </td>
                   </tr>

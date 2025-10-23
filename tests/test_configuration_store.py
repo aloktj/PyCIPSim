@@ -74,3 +74,17 @@ def test_signal_value_update_blocked_for_input(tmp_path: Path) -> None:
 
     with pytest.raises(ConfigurationError):
         store.update_signal_value("DemoConfig", 100, "SignalA", "1")
+
+
+def test_remove_signal_persists(tmp_path: Path) -> None:
+    storage = tmp_path / "configs.json"
+    store = ConfigurationStore(storage_path=storage)
+    config = _sample_configuration(direction="output")
+    store.upsert(config)
+
+    store.remove_signal("DemoConfig", 100, "SignalA")
+
+    reloaded = ConfigurationStore(storage_path=storage)
+    updated = reloaded.get("DemoConfig")
+    remaining = [signal.name for signal in updated.find_assembly(100).signals]
+    assert remaining == ["SignalB"]

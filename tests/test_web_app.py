@@ -96,3 +96,20 @@ def test_value_update_rejected_for_input_assembly(store: ConfigurationStore) -> 
     assert "error=" in response.headers["location"]
     config_after = store.get("WebConfig")
     assert config_after.find_signal(200, "SigA").value == "0"
+
+
+def test_remove_signal_from_web(store: ConfigurationStore) -> None:
+    manager = SimulatorManager()
+    config = SimulatorConfiguration.from_dict(_scenario_payload())
+    store.upsert(config)
+    app = get_app(store=store, manager=manager)
+    client = TestClient(app)
+
+    response = client.post(
+        "/configs/WebConfig/assemblies/200/signals/SigA/delete",
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    assembly = store.get("WebConfig").find_assembly(200)
+    assert assembly.signals == []

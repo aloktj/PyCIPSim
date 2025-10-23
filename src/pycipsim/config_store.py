@@ -195,6 +195,16 @@ class ConfigurationStore:
             self._persist()
             return new_signal
 
+    def remove_signal(self, name: str, assembly_id: int, signal_name: str) -> None:
+        """Remove a signal from the given assembly."""
+
+        with self._lock:
+            configuration = self.get(name)
+            assembly = configuration.find_assembly(assembly_id)
+            index = assembly.find_signal_index(signal_name)
+            assembly.signals.pop(index)
+            self._persist()
+
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
