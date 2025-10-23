@@ -63,9 +63,38 @@ def test_forward_open_metadata_generation() -> None:
     assert metadata["configuration_point"] == 1
     assert metadata["t_to_o_connection_type"] == "multicast"
     assert metadata["o_to_t_connection_type"] == "point_to_point"
+    assert metadata["t_to_o_size"] == 12
+    assert metadata["o_to_t_size"] == 5
+    assert metadata["t_to_o_header_bytes"] == 8
+    assert metadata["o_to_t_header_bytes"] == 4
+    assert metadata["connection_points"] == [100, 200, 1]
+
+
+def test_forward_open_header_overrides() -> None:
+    config = SimulatorConfiguration.from_dict(
+        {
+            "name": "Runtime",
+            "target": {"ip": "10.0.0.10"},
+            "metadata": {
+                "forward_open": {
+                    "o_to_t_header_bytes": 0,
+                    "t_to_o_header_bytes": 0,
+                }
+            },
+            "assemblies": [
+                {"id": 1, "name": "Config", "direction": "config", "size_bits": 16},
+                {"id": 100, "name": "Inputs", "direction": "input", "size_bits": 32},
+                {"id": 200, "name": "Outputs", "direction": "output", "size_bits": 8},
+            ],
+        }
+    )
+
+    metadata = config.build_forward_open_metadata()
+    assert metadata is not None
     assert metadata["t_to_o_size"] == 4
     assert metadata["o_to_t_size"] == 1
-    assert metadata["connection_points"] == [100, 200, 1]
+    assert metadata["t_to_o_header_bytes"] == 0
+    assert metadata["o_to_t_header_bytes"] == 0
 
 
 def test_upsert_and_reload(tmp_path: Path) -> None:

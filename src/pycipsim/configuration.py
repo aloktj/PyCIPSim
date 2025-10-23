@@ -422,17 +422,36 @@ class SimulatorConfiguration:
         t_to_o_instance = overrides.get("t_to_o_instance", input_assembly.assembly_id)
         o_to_t_instance = overrides.get("o_to_t_instance", output_assembly.assembly_id)
 
+        def _header_bytes(key: str, default: int) -> int:
+            value = overrides.get(key)
+            if value is None:
+                return default
+            try:
+                parsed = int(str(value), 0)
+            except Exception as exc:  # pragma: no cover - defensive
+                raise ConfigurationError(
+                    f"Forward-open override '{key}' must be numeric."
+                ) from exc
+            if parsed < 0:
+                raise ConfigurationError(
+                    f"Forward-open override '{key}' cannot be negative."
+                )
+            return parsed
+
+        base_o_to_t = max(1, _total_bytes(output_assembly.size_bits))
+        base_t_to_o = max(1, _total_bytes(input_assembly.size_bits))
+        o_to_t_header = _header_bytes("o_to_t_header_bytes", 4 if base_o_to_t else 0)
+        t_to_o_header = _header_bytes("t_to_o_header_bytes", 8 if base_t_to_o else 0)
+        default_o_to_t_size = base_o_to_t + o_to_t_header
+        default_t_to_o_size = base_t_to_o + t_to_o_header
+
         metadata: Dict[str, Any] = {
             "application_class": overrides.get("application_class", 0x04),
             "application_instance": application_instance,
             "o_to_t_instance": o_to_t_instance,
             "t_to_o_instance": t_to_o_instance,
-            "o_to_t_size": overrides.get(
-                "o_to_t_size", max(1, _total_bytes(output_assembly.size_bits))
-            ),
-            "t_to_o_size": overrides.get(
-                "t_to_o_size", max(1, _total_bytes(input_assembly.size_bits))
-            ),
+            "o_to_t_size": overrides.get("o_to_t_size", max(1, default_o_to_t_size)),
+            "t_to_o_size": overrides.get("t_to_o_size", max(1, default_t_to_o_size)),
             "o_to_t_connection_type": overrides.get(
                 "o_to_t_connection_type", "point_to_point"
             ),
@@ -451,12 +470,18 @@ class SimulatorConfiguration:
         if configuration_point is not None:
             metadata["configuration_point"] = configuration_point
 
-        connection_points: List[int] = [t_to_o_instance, o_to_t_instance]
+        connection_points: List[int] = []
+        for point in (t_to_o_instance, o_to_t_instance):
+            if point not in connection_points:
+                connection_points.append(point)
         if configuration_point is not None and configuration_point not in connection_points:
             connection_points.append(configuration_point)
         metadata["connection_points"] = overrides.get(
             "connection_points", connection_points
         )
+
+        metadata["o_to_t_header_bytes"] = o_to_t_header
+        metadata["t_to_o_header_bytes"] = t_to_o_header
 
         optional_keys = (
             "o_to_t_connection_id",

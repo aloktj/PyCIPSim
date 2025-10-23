@@ -225,6 +225,16 @@ def _resolve_driver(config: SessionConfig) -> HandshakeDriver:
             if config_point is not None and config_point not in connection_points:
                 connection_points.append(config_point)
 
+        desired_order = [t_to_o_instance, o_to_t_instance]
+        ordered: List[int] = []
+        for point in desired_order:
+            if point in connection_points and point not in ordered:
+                ordered.append(point)
+        for point in connection_points:
+            if point not in ordered:
+                ordered.append(point)
+        connection_points = ordered
+
         if not connection_points:
             raise RuntimeError("Forward-open metadata did not specify any connection points.")
 
@@ -270,6 +280,10 @@ def _resolve_driver(config: SessionConfig) -> HandshakeDriver:
                 "vendor_id": vendor_id,
                 "originator_serial": originator_serial,
                 "t_to_o_conn_id": t_to_o_conn_id,
+                "timeout_multiplier": timeout_multiplier,
+                "path_bytes": path_bytes,
+                "path_words": path_words,
+                "connection_points": connection_points,
             },
         )
 
@@ -290,6 +304,7 @@ def _resolve_driver(config: SessionConfig) -> HandshakeDriver:
                 cfg["connection_size"] = min(max_size, 4000)
             forward_open_meta = metadata.get("forward_open") if isinstance(metadata, dict) else None
             self._forward_open_meta = forward_open_meta if isinstance(forward_open_meta, dict) else None
+            self._forward_open_state: Optional[Dict[str, Any]] = None
             source = config.resolve_source_address()
             if source:
                 source_ip, _ = source
@@ -321,6 +336,7 @@ def _resolve_driver(config: SessionConfig) -> HandshakeDriver:
                 return
 
             request_data, service, state = _build_forward_open_request(self._forward_open_meta)
+            self._forward_open_state = state
             cfg = self._driver._cfg  # type: ignore[attr-defined]
             cfg["csn"] = UINT.encode(state["connection_serial"])
             cfg["vid"] = UINT.encode(state["vendor_id"])
@@ -329,6 +345,7 @@ def _resolve_driver(config: SessionConfig) -> HandshakeDriver:
             route_path = DRIVER_PADDED_EPATH.encode(
                 self._driver._cfg["cip_path"] + MSG_ROUTER_PATH, length=True
             )
+            state["route_path"] = route_path
             try:
                 response = self._driver.generic_message(
                     service=service,
@@ -347,14 +364,58 @@ def _resolve_driver(config: SessionConfig) -> HandshakeDriver:
             setattr(self._driver, "_connection_opened", True)
             setattr(self._driver, "_target_is_connected", True)
             value = getattr(response, "value", None)
-            if isinstance(value, (bytes, bytearray)) and len(value) >= 4:
-                setattr(self._driver, "_target_cid", bytes(value[:4]))
+            if isinstance(value, (bytes, bytearray)):
+                data = bytes(value)
+                if len(data) >= 4:
+                    setattr(self._driver, "_target_cid", data[:4])
+                    state["o_to_t_connection_id"] = int.from_bytes(data[:4], "little")
+                if len(data) >= 8:
+                    t_to_o_cid = int.from_bytes(data[4:8], "little")
+                    state["t_to_o_connection_id"] = t_to_o_cid
+                    cfg["cid"] = UDINT.encode(t_to_o_cid)
 
         def forward_close(self) -> None:
+            if not self._forward_open_meta:
+                with contextlib.suppress(Exception):
+                    forward_close = getattr(self._driver, "_forward_close", None)
+                    if callable(forward_close):
+                        forward_close()
+                return
+
+            state = getattr(self, "_forward_open_state", None)
+            if not isinstance(state, dict):
+                return
+            path_bytes = state.get("path_bytes")
+            path_words = state.get("path_words")
+            if not isinstance(path_bytes, (bytes, bytearray)) or path_words is None:
+                return
+            request = b"".join(
+                [
+                    PRIORITY,
+                    TIMEOUT_TICKS,
+                    UINT.encode(state["connection_serial"]),
+                    UINT.encode(state["vendor_id"]),
+                    UDINT.encode(state["originator_serial"]),
+                    bytes([int(path_words) & 0xFF]),
+                    b"\x00",
+                    bytes(path_bytes),
+                ]
+            )
+            route_path = state.get("route_path")
+            if not isinstance(route_path, (bytes, bytearray)):
+                route_path = DRIVER_PADDED_EPATH.encode(
+                    self._driver._cfg["cip_path"] + MSG_ROUTER_PATH, length=True
+                )
             with contextlib.suppress(Exception):
-                forward_close = getattr(self._driver, "_forward_close", None)
-                if callable(forward_close):
-                    forward_close()
+                self._driver.generic_message(
+                    service=ConnectionManagerServices.forward_close,
+                    class_code=ClassCode.connection_manager,
+                    instance=ConnectionManagerInstances.close_request,
+                    request_data=request,
+                    route_path=route_path,
+                    connected=False,
+                    name="forward_close",
+                )
 
         def close(self) -> None:
             with contextlib.suppress(Exception):
