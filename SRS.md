@@ -78,6 +78,7 @@ It is assumed that users have access to Python development environments and can 
 3. The system shall prevent modification of signal types, offsets, and names while a simulation is running but permit payload value updates (set/clear) during execution.
 4. The system shall provide controls to start and stop the simulator using any saved configuration, updating the displayed handshake status accordingly.
 5. The system shall allow users to choose a host network interface for each configuration so live CIP connections originate from the selected adapter.
+6. The web application shall expose editable forward-open parameters—connection sizes, RPI values, connection-point ordering, and originator identity fields—while defaulting unset inputs to auto-generated values derived from the active configuration.
 
 ### 3.7 Live CIP I/O Runtime
 1. The system shall establish real TCP, ENIP register session, and CIP forward-open handshakes on demand, keeping connections active for the duration of a simulation.

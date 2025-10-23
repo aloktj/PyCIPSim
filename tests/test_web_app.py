@@ -178,6 +178,38 @@ def test_update_target_via_web(
     assert refreshed.allow_external is True
 
 
+def test_update_forward_open_via_web(
+    store: ConfigurationStore, manager: SimulatorManager
+) -> None:
+    payload = _scenario_payload()
+    payload["assemblies"].append(
+        {"id": 101, "name": "Inputs", "direction": "input", "size_bits": 1120}
+    )
+    config = SimulatorConfiguration.from_dict(payload)
+    store.upsert(config)
+    app = get_app(store=store, manager=manager)
+    client = TestClient(app)
+
+    response = client.post(
+        "/configs/WebConfig/forward-open",
+        data={
+            "o_to_t_size": "146",
+            "t_to_o_size": "148",
+            "t_to_o_connection_type": "multicast",
+            "use_large_forward_open": "on",
+        },
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    metadata = store.get("WebConfig").metadata.get("forward_open")
+    assert metadata is not None
+    assert metadata["o_to_t_size"] == 146
+    assert metadata["t_to_o_size"] == 148
+    assert metadata["t_to_o_connection_type"] == "multicast"
+    assert metadata["use_large_forward_open"] is True
+
+
 def test_start_simulated_mode_skips_runtime(
     store: ConfigurationStore, manager: SimulatorManager
 ) -> None:

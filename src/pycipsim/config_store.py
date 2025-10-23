@@ -168,6 +168,153 @@ class ConfigurationStore:
             self._persist()
             return configuration
 
+    def update_forward_open(
+        self,
+        name: str,
+        form_data: Iterable[tuple[str, Any]] | Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Update stored forward-open overrides for a configuration."""
+
+        def _as_mapping(data: Iterable[tuple[str, Any]] | Dict[str, Any]) -> Dict[str, Any]:
+            if isinstance(data, dict):
+                return dict(data)
+            payload: Dict[str, Any] = {}
+            for key, value in data:
+                payload[key] = value
+            return payload
+
+        def _optional_int(
+            mapping: Dict[str, Any],
+            key: str,
+            *,
+            minimum: Optional[int] = None,
+        ) -> Optional[int]:
+            raw = mapping.get(key)
+            if raw is None:
+                return None
+            text = str(raw).strip()
+            if not text:
+                return None
+            try:
+                value = int(text, 0)
+            except Exception as exc:  # pragma: no cover - defensive
+                raise ConfigurationError(
+                    f"Forward-open field '{key}' must be an integer."
+                ) from exc
+            if minimum is not None and value < minimum:
+                raise ConfigurationError(
+                    f"Forward-open field '{key}' must be at least {minimum}."
+                )
+            return value
+
+        def _optional_connection_type(mapping: Dict[str, Any], key: str) -> Optional[str]:
+            raw = mapping.get(key)
+            if raw is None:
+                return None
+            text = str(raw).strip().lower()
+            if not text:
+                return None
+            mapping_table = {
+                "point_to_point": "point_to_point",
+                "point-to-point": "point_to_point",
+                "p2p": "point_to_point",
+                "unicast": "point_to_point",
+                "multicast": "multicast",
+                "multi": "multicast",
+            }
+            if text not in mapping_table:
+                raise ConfigurationError(
+                    f"Forward-open field '{key}' must be point_to_point or multicast."
+                )
+            return mapping_table[text]
+
+        def _optional_points(mapping: Dict[str, Any], key: str) -> Optional[list[int]]:
+            raw = mapping.get(key)
+            if raw is None:
+                return None
+            text = str(raw).replace("\n", ",").strip()
+            if not text:
+                return None
+            points: list[int] = []
+            for token in text.replace(";", ",").split(","):
+                chunk = token.strip()
+                if not chunk:
+                    continue
+                try:
+                    value = int(chunk, 0)
+                except Exception as exc:  # pragma: no cover - defensive
+                    raise ConfigurationError(
+                        f"Forward-open connection point '{chunk}' is not numeric."
+                    ) from exc
+                if value < 0:
+                    raise ConfigurationError(
+                        "Forward-open connection points cannot be negative."
+                    )
+                if value not in points:
+                    points.append(value)
+            return points
+
+        with self._lock:
+            configuration = self.get(name)
+            payload = _as_mapping(form_data)
+            metadata = dict(configuration.metadata)
+            existing = metadata.get("forward_open")
+            overrides = dict(existing) if isinstance(existing, dict) else {}
+
+            def _assign_int(field: str, *, minimum: Optional[int] = None) -> None:
+                value = _optional_int(payload, field, minimum=minimum)
+                if value is None:
+                    overrides.pop(field, None)
+                else:
+                    overrides[field] = value
+
+            for field, minimum in (
+                ("application_class", 0),
+                ("application_instance", 0),
+                ("o_to_t_instance", 0),
+                ("t_to_o_instance", 0),
+                ("configuration_point", 0),
+                ("o_to_t_size", 1),
+                ("t_to_o_size", 1),
+                ("o_to_t_header_bytes", 0),
+                ("t_to_o_header_bytes", 0),
+                ("o_to_t_rpi_us", 1),
+                ("t_to_o_rpi_us", 1),
+                ("transport_type_trigger", 0),
+                ("timeout_multiplier", 0),
+                ("connection_serial", 1),
+                ("vendor_id", 0),
+                ("originator_serial", 1),
+                ("o_to_t_connection_id", 0),
+                ("t_to_o_connection_id", 0),
+            ):
+                _assign_int(field, minimum=minimum)
+
+            for field in ("o_to_t_connection_type", "t_to_o_connection_type"):
+                value = _optional_connection_type(payload, field)
+                if value is None:
+                    overrides.pop(field, None)
+                else:
+                    overrides[field] = value
+
+            points = _optional_points(payload, "connection_points")
+            if points is None:
+                overrides.pop("connection_points", None)
+            else:
+                overrides["connection_points"] = points
+
+            if payload.get("use_large_forward_open"):
+                overrides["use_large_forward_open"] = True
+            else:
+                overrides.pop("use_large_forward_open", None)
+
+            metadata["forward_open"] = overrides if overrides else {}
+            if not metadata["forward_open"]:
+                metadata.pop("forward_open")
+            configuration.metadata = metadata
+            self._persist()
+            return dict(metadata.get("forward_open", {}))
+
     def update_signal_details(
         self,
         name: str,

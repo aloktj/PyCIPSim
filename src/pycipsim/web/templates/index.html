@@ -33,6 +33,15 @@
       .target-form input[type="text"],
       .target-form input[type="number"] { width: 14rem; }
       .target-form .inline-field { display: inline-flex; flex-direction: column; margin-right: 1rem; }
+      .forward-open-form { margin-bottom: 2rem; }
+      .forward-open-form h3 { margin-bottom: 0.5rem; }
+      .forward-open-form .form-note { margin: 0 0 0.75rem; color: #555; font-size: 0.9rem; }
+      .forward-open-form .form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr)); gap: 1rem; }
+      .forward-open-form label { display: flex; flex-direction: column; font-size: 0.9rem; }
+      .forward-open-form input[type="text"],
+      .forward-open-form select { width: 100%; }
+      .checkbox-inline { display: inline-flex; align-items: center; gap: 0.5rem; margin-top: 0.75rem; }
+      .form-actions { margin-top: 1rem; }
       .icon-button {
         cursor: pointer;
         display: inline-flex;
@@ -214,6 +223,101 @@
             {% if is_running %}
               <p class="disabled-note">Target fields are locked while the simulator is running.</p>
             {% endif %}
+          </div>
+
+          {% set fo_effective = forward_open_effective or {} %}
+          {% set fo_overrides = forward_open_overrides or {} %}
+          <div class="forward-open-form">
+            <h3>Forward Open Parameters</h3>
+            <p class="form-note">
+              Values saved here override the automatically generated forward-open request. Leave a field blank to fall back to the
+              simulator defaults.
+            </p>
+            <form method="post" action="/configs/{{ current.name }}/forward-open">
+              <div class="form-grid">
+                <label>Application Class
+                  <input type="text" name="application_class" value="{{ fo_overrides.get('application_class', fo_effective.get('application_class', '')) }}" placeholder="e.g. 0x04" {% if is_running %}disabled{% endif %} />
+                </label>
+                <label>Application Instance
+                  <input type="text" name="application_instance" value="{{ fo_overrides.get('application_instance', fo_effective.get('application_instance', '')) }}" placeholder="e.g. 1" {% if is_running %}disabled{% endif %} />
+                </label>
+                <label>T→O Assembly Instance
+                  <input type="text" name="t_to_o_instance" value="{{ fo_overrides.get('t_to_o_instance', fo_effective.get('t_to_o_instance', '')) }}" placeholder="0x65" {% if is_running %}disabled{% endif %} />
+                </label>
+                <label>O→T Assembly Instance
+                  <input type="text" name="o_to_t_instance" value="{{ fo_overrides.get('o_to_t_instance', fo_effective.get('o_to_t_instance', '')) }}" placeholder="0x64" {% if is_running %}disabled{% endif %} />
+                </label>
+                <label>Configuration Assembly
+                  <input type="text" name="configuration_point" value="{{ fo_overrides.get('configuration_point', fo_effective.get('configuration_point', '')) }}" placeholder="Optional" {% if is_running %}disabled{% endif %} />
+                </label>
+                <label>Connection Points
+                  <input type="text" name="connection_points" value="{{ fo_overrides.get('connection_points') | join(', ') if fo_overrides.get('connection_points') else '' }}" placeholder="Comma-separated (e.g. 0x65,0x64)" {% if is_running %}disabled{% endif %} />
+                </label>
+                <label>O→T Size (bytes)
+                  <input type="text" name="o_to_t_size" value="{{ fo_overrides.get('o_to_t_size', fo_effective.get('o_to_t_size', '')) }}" placeholder="{{ fo_effective.get('o_to_t_size') }}" {% if is_running %}disabled{% endif %} />
+                </label>
+                <label>O→T Header Bytes
+                  <input type="text" name="o_to_t_header_bytes" value="{{ fo_overrides.get('o_to_t_header_bytes', fo_effective.get('o_to_t_header_bytes', '')) }}" placeholder="{{ fo_effective.get('o_to_t_header_bytes') }}" {% if is_running %}disabled{% endif %} />
+                </label>
+                <label>O→T Connection Type
+                  <select name="o_to_t_connection_type" {% if is_running %}disabled{% endif %}>
+                    {% set o_to_t_type = fo_overrides.get('o_to_t_connection_type', fo_effective.get('o_to_t_connection_type', 'point_to_point')) %}
+                    <option value="point_to_point" {% if o_to_t_type == 'point_to_point' %}selected{% endif %}>Point-to-point</option>
+                    <option value="multicast" {% if o_to_t_type == 'multicast' %}selected{% endif %}>Multicast</option>
+                  </select>
+                </label>
+                <label>T→O Size (bytes)
+                  <input type="text" name="t_to_o_size" value="{{ fo_overrides.get('t_to_o_size', fo_effective.get('t_to_o_size', '')) }}" placeholder="{{ fo_effective.get('t_to_o_size') }}" {% if is_running %}disabled{% endif %} />
+                </label>
+                <label>T→O Header Bytes
+                  <input type="text" name="t_to_o_header_bytes" value="{{ fo_overrides.get('t_to_o_header_bytes', fo_effective.get('t_to_o_header_bytes', '')) }}" placeholder="{{ fo_effective.get('t_to_o_header_bytes') }}" {% if is_running %}disabled{% endif %} />
+                </label>
+                <label>T→O Connection Type
+                  <select name="t_to_o_connection_type" {% if is_running %}disabled{% endif %}>
+                    {% set t_to_o_type = fo_overrides.get('t_to_o_connection_type', fo_effective.get('t_to_o_connection_type', 'multicast' if current.multicast else 'point_to_point')) %}
+                    <option value="point_to_point" {% if t_to_o_type == 'point_to_point' %}selected{% endif %}>Point-to-point</option>
+                    <option value="multicast" {% if t_to_o_type == 'multicast' %}selected{% endif %}>Multicast</option>
+                  </select>
+                </label>
+                <label>O→T RPI (µs)
+                  <input type="text" name="o_to_t_rpi_us" value="{{ fo_overrides.get('o_to_t_rpi_us', fo_effective.get('o_to_t_rpi_us', '')) }}" placeholder="200000" {% if is_running %}disabled{% endif %} />
+                </label>
+                <label>T→O RPI (µs)
+                  <input type="text" name="t_to_o_rpi_us" value="{{ fo_overrides.get('t_to_o_rpi_us', fo_effective.get('t_to_o_rpi_us', '')) }}" placeholder="200000" {% if is_running %}disabled{% endif %} />
+                </label>
+                <label>Timeout Multiplier
+                  <input type="text" name="timeout_multiplier" value="{{ fo_overrides.get('timeout_multiplier', fo_effective.get('timeout_multiplier', '')) }}" placeholder="0" {% if is_running %}disabled{% endif %} />
+                </label>
+                <label>Transport Type/Trigger
+                  <input type="text" name="transport_type_trigger" value="{{ fo_overrides.get('transport_type_trigger', fo_effective.get('transport_type_trigger', '')) }}" placeholder="0x01" {% if is_running %}disabled{% endif %} />
+                </label>
+                <label>Connection Serial Number
+                  <input type="text" name="connection_serial" value="{{ fo_overrides.get('connection_serial', fo_effective.get('connection_serial', '')) }}" placeholder="e.g. 0x936d" {% if is_running %}disabled{% endif %} />
+                </label>
+                <label>Originator Vendor ID
+                  <input type="text" name="vendor_id" value="{{ fo_overrides.get('vendor_id', fo_effective.get('vendor_id', '')) }}" placeholder="e.g. 0x0476" {% if is_running %}disabled{% endif %} />
+                </label>
+                <label>Originator Serial Number
+                  <input type="text" name="originator_serial" value="{{ fo_overrides.get('originator_serial', fo_effective.get('originator_serial', '')) }}" placeholder="e.g. 0x47" {% if is_running %}disabled{% endif %} />
+                </label>
+                <label>O→T Connection ID
+                  <input type="text" name="o_to_t_connection_id" value="{{ fo_overrides.get('o_to_t_connection_id', '') }}" placeholder="Optional" {% if is_running %}disabled{% endif %} />
+                </label>
+                <label>T→O Connection ID
+                  <input type="text" name="t_to_o_connection_id" value="{{ fo_overrides.get('t_to_o_connection_id', '') }}" placeholder="Optional" {% if is_running %}disabled{% endif %} />
+                </label>
+              </div>
+              <label class="checkbox-inline">
+                <input type="checkbox" name="use_large_forward_open" value="on" {% if fo_overrides.get('use_large_forward_open') %}checked{% endif %} {% if is_running %}disabled{% endif %} />
+                Use Large Forward Open (32-bit connection parameters)
+              </label>
+              <div class="form-actions">
+                <button type="submit" {% if is_running %}disabled{% endif %}>Save Forward Open</button>
+              </div>
+              {% if is_running %}
+                <p class="disabled-note">Forward-open fields are locked while the simulator is running.</p>
+              {% endif %}
+            </form>
           </div>
 
           {% set handshake = handshake_result %}

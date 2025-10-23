@@ -176,6 +176,11 @@ configuration and reused whenever the simulator starts, ensuring connections ori
 panel exposes a **Connection Mode** selector: choose *Simulated* to exercise the UI without opening sockets, or switch to *Live*
 to attempt real TCP/ENIP/CIP exchanges with the target device.
 
+Need to fine tune the handshake for a specific adapter? Open the **Forward Open Parameters** panel in the dashboard to override
+application instances, RPI values, connection sizes, connection-point ordering, vendor/serial identifiers, and whether the
+driver should send large (32-bit) connection parameters. Leaving a field blank reverts that aspect to the simulator’s
+auto-generated defaults, making it easy to copy values from packet captures only where they differ.
+
 For environments with strict egress policies, populate the **Allowed Hosts** field with any additional IPs or hostnames the
 simulator is permitted to contact. The active target IP is automatically whitelisted at runtime, and you can tick **Allow
 external targets** to bypass the whitelist entirely when connecting to lab hardware outside the default loopback range.
