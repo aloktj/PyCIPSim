@@ -59,6 +59,15 @@ _CIP_SIGNAL_TYPE_BITS: Dict[str, int] = {
     "DATE_AND_TIME": 64,
 }
 
+# Preferred padding types by size so gaps can be filled with the fewest
+# auto-generated signals possible while maintaining byte-aligned packing.
+_PADDING_TYPE_CANDIDATES: List[tuple[int, str]] = [
+    (64, "ULINT"),
+    (32, "UDINT"),
+    (16, "UINT"),
+    (8, "USINT"),
+]
+
 
 def canonicalize_signal_type(value: str) -> str:
     """Return the canonical representation for a signal type if known."""
@@ -256,18 +265,16 @@ class AssemblyDefinition:
                     )
                 coverage[bit] = True
         padding_signals: List[SignalDefinition] = []
-        for bit, covered in enumerate(coverage):
-            if not covered:
-                padding_signals.append(
-                    SignalDefinition(
-                        name=f"padding_BOOL_{bit}",
-                        offset=bit,
-                        signal_type="BOOL",
-                        value="0",
-                        size_bits=1,
-                        is_padding=True,
-                    )
-                )
+        bit_index = 0
+        while bit_index < self.size_bits:
+            if coverage[bit_index]:
+                bit_index += 1
+                continue
+            start = bit_index
+            while bit_index < self.size_bits and not coverage[bit_index]:
+                bit_index += 1
+            length = bit_index - start
+            padding_signals.extend(_build_padding_for_gap(start, length))
         combined = base_signals + padding_signals
         combined.sort(key=lambda sig: (sig.offset, sig.is_padding, sig.name))
         self.signals = combined
@@ -362,4 +369,83 @@ class SimulatorConfiguration:
         raise ConfigurationError(
             f"Signal '{signal_name}' not found in assembly {assembly_id} for configuration '{self.name}'."
         )
+
+
+def _build_padding_for_gap(start: int, length: int) -> List[SignalDefinition]:
+    """Generate padding signals to cover an uncovered region."""
+
+    padding: List[SignalDefinition] = []
+    current = start
+    remaining = length
+
+    # Use single-bit padding until the region is byte-aligned.
+    misalignment = current % 8
+    if misalignment:
+        align_bits = min(remaining, 8 - misalignment)
+        for offset in range(current, current + align_bits):
+            padding.append(
+                SignalDefinition(
+                    name=f"padding_BOOL_{offset}",
+                    offset=offset,
+                    signal_type="BOOL",
+                    value="0",
+                    size_bits=1,
+                    is_padding=True,
+                )
+            )
+        current += align_bits
+        remaining -= align_bits
+
+    if remaining <= 0:
+        return padding
+
+    full_bytes, trailing_bits = divmod(remaining, 8)
+
+    for size_bits, signal_type in _PADDING_TYPE_CANDIDATES:
+        chunk_bytes = size_bits // 8
+        if chunk_bytes == 0:
+            continue
+        while full_bytes >= chunk_bytes:
+            padding.append(
+                SignalDefinition(
+                    name=f"padding_{signal_type}_{current}",
+                    offset=current,
+                    signal_type=signal_type,
+                    value="0",
+                    size_bits=size_bits,
+                    is_padding=True,
+                )
+            )
+            current += size_bits
+            full_bytes -= chunk_bytes
+
+    # Cover any remaining bytes with 8-bit padding.
+    while full_bytes > 0:
+        padding.append(
+            SignalDefinition(
+                name=f"padding_USINT_{current}",
+                offset=current,
+                signal_type="USINT",
+                value="0",
+                size_bits=8,
+                is_padding=True,
+            )
+        )
+        current += 8
+        full_bytes -= 1
+
+    if trailing_bits:
+        for offset in range(current, current + trailing_bits):
+            padding.append(
+                SignalDefinition(
+                    name=f"padding_BOOL_{offset}",
+                    offset=offset,
+                    signal_type="BOOL",
+                    value="0",
+                    size_bits=1,
+                    is_padding=True,
+                )
+            )
+
+    return padding
 

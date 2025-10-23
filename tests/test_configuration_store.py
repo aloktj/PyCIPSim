@@ -284,9 +284,55 @@ def test_padding_generated_to_fill_assembly(tmp_path: Path) -> None:
     store.upsert(config)
 
     assembly = store.get("PadConfig").find_assembly(1)
-    padding_offsets = sorted(sig.offset for sig in assembly.signals if sig.is_padding)
+    padding_offsets = sorted(
+        sig.offset for sig in assembly.signals if sig.is_padding and sig.signal_type == "BOOL"
+    )
     assert padding_offsets == [0, 1, 2, 3, 4, 6, 7]
     assert any(sig.name == "BitFive" for sig in assembly.signals if not sig.is_padding)
+
+
+def test_padding_prefers_wider_types(tmp_path: Path) -> None:
+    storage = tmp_path / "configs.json"
+    store = ConfigurationStore(storage_path=storage)
+    config = SimulatorConfiguration.from_dict(
+        {
+            "name": "WidePadding",
+            "target": {"ip": "10.0.0.3", "port": 44818},
+            "assemblies": [
+                {
+                    "id": 5,
+                    "name": "Offsets",
+                    "direction": "output",
+                    "size_bits": 32,
+                    "signals": [
+                        {"name": "FirstBit", "offset": 0, "type": "BOOL"},
+                    ],
+                },
+                {
+                    "id": 6,
+                    "name": "ByteGap",
+                    "direction": "output",
+                    "size_bits": 16,
+                    "signals": [
+                        {"name": "Byte", "offset": 8, "type": "USINT"},
+                    ],
+                },
+            ],
+        }
+    )
+    store.upsert(config)
+
+    offsets = store.get("WidePadding")
+    first = offsets.find_assembly(5)
+    bool_padding = [sig.offset for sig in first.signals if sig.is_padding and sig.signal_type == "BOOL"]
+    assert bool_padding == [1, 2, 3, 4, 5, 6, 7]
+    assert any(sig.signal_type == "UINT" and sig.offset == 8 for sig in first.signals if sig.is_padding)
+    assert any(sig.signal_type == "USINT" and sig.offset == 24 for sig in first.signals if sig.is_padding)
+
+    second = offsets.find_assembly(6)
+    padding_types = [sig.signal_type for sig in second.signals if sig.is_padding]
+    assert padding_types == ["USINT"]
+    assert second.signals[0].offset == 0
 
 
 def test_signal_cannot_exceed_assembly_size(tmp_path: Path) -> None:
