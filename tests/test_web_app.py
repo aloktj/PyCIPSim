@@ -24,6 +24,7 @@ def _scenario_payload(name: str = "WebConfig") -> dict:
                 "id": 200,
                 "name": "Outputs",
                 "direction": "output",
+                "size_bits": 8,
                 "signals": [
                     {"name": "SigA", "offset": 0, "type": "BOOL", "value": "0"},
                 ],
@@ -152,7 +153,7 @@ def test_update_assembly_metadata_via_web(store: ConfigurationStore) -> None:
 
     response = client.post(
         "/configs/WebConfig/assemblies/200/metadata",
-        data={"new_id": "300", "direction": "input"},
+        data={"new_id": "300", "direction": "input", "size_bits": "8"},
         follow_redirects=False,
     )
 
@@ -171,7 +172,7 @@ def test_assembly_metadata_update_blocked_when_running(store: ConfigurationStore
 
     response = client.post(
         "/configs/WebConfig/assemblies/200/metadata",
-        data={"new_id": "250", "direction": "output"},
+        data={"new_id": "250", "direction": "output", "size_bits": "8"},
         follow_redirects=False,
     )
 
@@ -210,7 +211,7 @@ def test_index_groups_assemblies_by_direction(store: ConfigurationStore) -> None
     assert "Output Assemblies" in html
     assert "Input Assemblies" in html
     output_section = html.split("Output Assemblies", 1)[1].split("Input Assemblies", 1)[0]
-    assert "Assembly Outputs (#200)" in output_section
+    assert "Assembly Outputs (#200" in output_section
     assert "Assembly SecondOutput (#210)" in output_section
     input_section = html.split("Input Assemblies", 1)[1]
     assert "Assembly InputOne (#310)" in input_section
@@ -229,6 +230,7 @@ def test_add_and_remove_assembly_via_web(store: ConfigurationStore) -> None:
             "assembly_id": "300",
             "assembly_name": "Extra",
             "direction": "input",
+            "size_bits": "8",
             "position": "after",
             "relative_assembly": "200",
         },
@@ -263,6 +265,7 @@ def test_add_assembly_blocked_when_running(store: ConfigurationStore) -> None:
             "assembly_id": "300",
             "assembly_name": "Blocked",
             "direction": "output",
+            "size_bits": "8",
         },
         follow_redirects=False,
     )

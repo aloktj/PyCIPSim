@@ -26,6 +26,7 @@ def _sample_configuration(*, direction: str = "input") -> SimulatorConfiguration
                 "id": 100,
                 "name": "Input",
                 "direction": direction,
+                "size_bits": 64,
                 "signals": [
                     {"name": "SignalA", "offset": 0, "type": "BOOL", "value": "0"},
                     {"name": "SignalB", "offset": 1, "type": "INT", "value": "5"},
@@ -80,7 +81,7 @@ def test_signal_type_validation(tmp_path: Path) -> None:
         "DemoConfig",
         100,
         new_name="SignalC",
-        offset="2",
+        offset="17",
         signal_type="bool",
         position="after",
         relative_signal="SignalB",
@@ -112,7 +113,7 @@ def test_remove_signal_persists(tmp_path: Path) -> None:
     reloaded = ConfigurationStore(storage_path=storage)
     updated = reloaded.get("DemoConfig")
     remaining = [signal.name for signal in updated.find_assembly(100).signals]
-    assert remaining == ["SignalB"]
+    assert [name for name in remaining if not name.startswith("padding_")] == ["SignalB"]
 
 
 def test_update_assembly_metadata(tmp_path: Path) -> None:
@@ -134,6 +135,7 @@ def test_update_assembly_metadata(tmp_path: Path) -> None:
         100,
         new_id="300",
         direction="input",
+        size_bits="64",
     )
 
     assert updated.assembly_id == 300
@@ -160,7 +162,9 @@ def test_update_assembly_rejects_duplicate_id(tmp_path: Path) -> None:
     store.upsert(config)
 
     with pytest.raises(ConfigurationError):
-        store.update_assembly("DemoConfig", 100, new_id="150", direction="output")
+        store.update_assembly(
+            "DemoConfig", 100, new_id="150", direction="output", size_bits="64"
+        )
 
 
 def test_add_assembly_with_relative_position(tmp_path: Path) -> None:
@@ -182,6 +186,7 @@ def test_add_assembly_with_relative_position(tmp_path: Path) -> None:
         assembly_id="0x201",
         assembly_name="Inserted",
         direction="In",
+        size_bits="64",
         position="before",
         relative_assembly="200",
     )
@@ -205,6 +210,7 @@ def test_add_and_remove_assembly_validations(tmp_path: Path) -> None:
             assembly_id="100",
             assembly_name="DuplicateId",
             direction="output",
+            size_bits="16",
         )
 
     with pytest.raises(ConfigurationError):
@@ -213,6 +219,7 @@ def test_add_and_remove_assembly_validations(tmp_path: Path) -> None:
             assembly_id="300",
             assembly_name="Input",
             direction="output",
+            size_bits="16",
         )
 
     store.add_assembly(
@@ -220,6 +227,7 @@ def test_add_and_remove_assembly_validations(tmp_path: Path) -> None:
         assembly_id="300",
         assembly_name="NewAssembly",
         direction="output",
+        size_bits="16",
         position="start",
     )
 
@@ -230,3 +238,66 @@ def test_add_and_remove_assembly_validations(tmp_path: Path) -> None:
     store.remove_assembly("DemoConfig", 300)
     refreshed = store.get("DemoConfig")
     assert all(assembly.assembly_id != 300 for assembly in refreshed.assemblies)
+
+
+def test_padding_generated_to_fill_assembly(tmp_path: Path) -> None:
+    storage = tmp_path / "configs.json"
+    store = ConfigurationStore(storage_path=storage)
+    config = SimulatorConfiguration.from_dict(
+        {
+            "name": "PadConfig",
+            "target": {"ip": "10.0.0.1", "port": 44818},
+            "assemblies": [
+                {
+                    "id": 1,
+                    "name": "Packed",
+                    "direction": "output",
+                    "size_bits": 8,
+                    "signals": [
+                        {"name": "BitFive", "offset": 5, "type": "BOOL"},
+                    ],
+                }
+            ],
+        }
+    )
+    store.upsert(config)
+
+    assembly = store.get("PadConfig").find_assembly(1)
+    padding_offsets = sorted(sig.offset for sig in assembly.signals if sig.is_padding)
+    assert padding_offsets == [0, 1, 2, 3, 4, 6, 7]
+    assert any(sig.name == "BitFive" for sig in assembly.signals if not sig.is_padding)
+
+
+def test_signal_cannot_exceed_assembly_size(tmp_path: Path) -> None:
+    storage = tmp_path / "configs.json"
+    store = ConfigurationStore(storage_path=storage)
+    config = SimulatorConfiguration.from_dict(
+        {
+            "name": "OverflowConfig",
+            "target": {"ip": "10.0.0.2", "port": 44818},
+            "assemblies": [
+                {
+                    "id": 1,
+                    "name": "Limited",
+                    "direction": "output",
+                    "size_bits": 8,
+                    "signals": [],
+                }
+            ],
+        }
+    )
+    store.upsert(config)
+
+    with pytest.raises(ConfigurationError):
+        store.add_signal(
+            "OverflowConfig",
+            1,
+            new_name="TooLarge",
+            offset="0",
+            signal_type="INT",
+            position="after",
+            relative_signal=None,
+        )
+
+    assembly = store.get("OverflowConfig").find_assembly(1)
+    assert not assembly.signals

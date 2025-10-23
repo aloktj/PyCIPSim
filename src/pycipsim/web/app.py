@@ -252,6 +252,7 @@ def get_app(
         assembly_id: int,
         new_id: str = Form(...),
         direction: str = Form(...),
+        size_bits: str = Form(...),
     ) -> RedirectResponse:
         try:
             manager.ensure_config_mutable(name)
@@ -260,6 +261,7 @@ def get_app(
                 assembly_id,
                 new_id=new_id,
                 direction=direction,
+                size_bits=size_bits,
             )
         except RuntimeError as exc:
             return redirect("/", error=str(exc))
@@ -276,6 +278,7 @@ def get_app(
         assembly_id: str = Form(...),
         assembly_name: str = Form(...),
         direction: str = Form(...),
+        size_bits: str = Form(...),
         position: str = Form("end"),
         relative_assembly: Optional[str] = Form(None),
     ) -> RedirectResponse:
@@ -286,6 +289,7 @@ def get_app(
                 assembly_id=assembly_id,
                 assembly_name=assembly_name,
                 direction=direction,
+                size_bits=size_bits,
                 position=position,
                 relative_assembly=relative_assembly or None,
             )
@@ -329,7 +333,7 @@ def get_app(
                 offset=offset,
                 signal_type=signal_type,
                 position=position,
-                relative_signal=relative_signal,
+                relative_signal=relative_signal or None,
             )
         except RuntimeError as exc:
             return redirect("/", error=str(exc))
