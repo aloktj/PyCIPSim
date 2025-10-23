@@ -161,8 +161,11 @@ def perform_handshake(
 
 
 def _default_tcp_connector(config: SessionConfig) -> None:
+    source_address = config.resolve_source_address()
     with contextlib.closing(
-        socket.create_connection((config.ip_address, config.port), config.timeout)
+        socket.create_connection(
+            (config.ip_address, config.port), config.timeout, source_address
+        )
     ):
         return
 
