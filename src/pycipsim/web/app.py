@@ -65,11 +65,15 @@ class SimulatorManager:
         with self._lock:
             if self._active is not None:
                 raise RuntimeError("A simulation is already running. Stop it before starting a new one.")
+            session_metadata = dict(config.metadata)
+            max_connection_size = config.max_connection_size_bytes()
+            if max_connection_size > 0:
+                session_metadata["max_connection_size_bytes"] = max_connection_size
             session_config = SessionConfig(
                 ip_address=config.target_ip,
                 port=config.target_port,
                 network_interface=config.network_interface,
-                metadata=config.metadata,
+                metadata=session_metadata,
             )
             mode = (config.runtime_mode or "simulated").lower()
             should_run_runtime = mode == "live"

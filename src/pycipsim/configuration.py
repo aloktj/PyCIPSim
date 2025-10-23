@@ -332,6 +332,13 @@ class SimulatorConfiguration:
     metadata: Dict[str, Any] = field(default_factory=dict)
     assemblies: List[AssemblyDefinition] = field(default_factory=list)
 
+    def max_connection_size_bytes(self) -> int:
+        """Return the maximum assembly size in bytes for forward-open sizing."""
+
+        if not self.assemblies:
+            return 0
+        return max(_total_bytes(assembly.size_bits) for assembly in self.assemblies)
+
     @classmethod
     def from_dict(cls, raw: Dict[str, Any]) -> "SimulatorConfiguration":
         try:
