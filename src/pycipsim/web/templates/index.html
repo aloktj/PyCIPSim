@@ -289,7 +289,11 @@
                             <input type="number" name="offset" required />
                           </label>
                           <label>Type
-                            <input type="text" name="signal_type" required />
+                            <select name="signal_type" required>
+                              {% for type_name in signal_types %}
+                                <option value="{{ type_name }}">{{ type_name }}</option>
+                              {% endfor %}
+                            </select>
                           </label>
                           <button type="submit">Add Signal</button>
                         </form>
@@ -339,7 +343,17 @@
                               {% if is_running %}
                                 {{ signal.signal_type }}
                               {% else %}
-                                <input form="{{ form_id }}" type="text" name="signal_type" value="{{ signal.signal_type }}" required />
+                                {% set ns = namespace(matched=false) %}
+                                <select form="{{ form_id }}" name="signal_type" required>
+                                  {% for type_name in signal_types %}
+                                    {% set is_selected = signal.signal_type and signal.signal_type|lower == type_name|lower %}
+                                    {% if is_selected %}{% set ns.matched = true %}{% endif %}
+                                    <option value="{{ type_name }}" {% if is_selected %}selected{% endif %}>{{ type_name }}</option>
+                                  {% endfor %}
+                                  {% if not ns.matched and signal.signal_type %}
+                                    <option value="{{ signal.signal_type }}" selected>{{ signal.signal_type }}</option>
+                                  {% endif %}
+                                </select>
                                 <button form="{{ form_id }}" type="submit">Save</button>
                               {% endif %}
                             </td>
@@ -374,7 +388,11 @@
                                         <input type="number" name="offset" required />
                                       </label>
                                       <label>Type
-                                        <input type="text" name="signal_type" required />
+                                        <select name="signal_type" required>
+                                          {% for type_name in signal_types %}
+                                            <option value="{{ type_name }}">{{ type_name }}</option>
+                                          {% endfor %}
+                                        </select>
                                       </label>
                                       <button type="submit">Add Signal</button>
                                     </form>

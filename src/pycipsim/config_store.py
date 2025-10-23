@@ -11,6 +11,7 @@ from .configuration import (
     ConfigurationError,
     SimulatorConfiguration,
     SignalDefinition,
+    validate_signal_type,
 )
 
 
@@ -80,10 +81,9 @@ class ConfigurationStore:
         with self._lock:
             configuration = self.get(name)
             signal = configuration.find_signal(assembly_id, signal_name)
-            if not new_type:
-                raise ConfigurationError("Signal type cannot be empty.")
-            if signal.signal_type != new_type:
-                signal.signal_type = new_type
+            normalized_type = validate_signal_type(new_type)
+            if signal.signal_type != normalized_type:
+                signal.signal_type = normalized_type
                 signal.value = None
             self._persist()
             return signal
@@ -141,12 +141,11 @@ class ConfigurationStore:
                     raise ConfigurationError(
                         f"Signal name '{new_name}' already exists in assembly {assembly_id}."
                     )
-            if not signal_type:
-                raise ConfigurationError("Signal type cannot be empty.")
+            normalized_type = validate_signal_type(signal_type)
             signal.name = new_name
             signal.offset = offset_value
-            if signal.signal_type != signal_type:
-                signal.signal_type = signal_type
+            if signal.signal_type != normalized_type:
+                signal.signal_type = normalized_type
                 signal.value = None
             self._persist()
             return signal
@@ -283,12 +282,11 @@ class ConfigurationStore:
                 raise ConfigurationError("Signal offset must be an integer.") from exc
             if offset_value < 0:
                 raise ConfigurationError("Signal offset cannot be negative.")
-            if not signal_type:
-                raise ConfigurationError("Signal type cannot be empty.")
+            normalized_type = validate_signal_type(signal_type)
             new_signal = SignalDefinition(
                 name=new_name,
                 offset=offset_value,
-                signal_type=signal_type,
+                signal_type=normalized_type,
             )
             insert_index = len(assembly.signals)
             if relative_signal:

@@ -19,6 +19,7 @@ from ..config_store import (
     ConfigurationStore,
     SimulatorConfiguration,
 )
+from ..configuration import CIP_SIGNAL_TYPES
 from ..handshake import HandshakeResult, perform_handshake
 from ..session import SessionConfig
 
@@ -128,6 +129,7 @@ def get_app(
                 "current": current,
                 "active": active,
                 "assembly_groups": assembly_groups,
+                "signal_types": CIP_SIGNAL_TYPES,
                 "message": message,
                 "error": error,
             },

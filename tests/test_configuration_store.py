@@ -67,6 +67,30 @@ def test_signal_updates_persist(tmp_path: Path) -> None:
     assert signal_b.value is None
 
 
+def test_signal_type_validation(tmp_path: Path) -> None:
+    storage = tmp_path / "configs.json"
+    store = ConfigurationStore(storage_path=storage)
+    config = _sample_configuration(direction="output")
+    store.upsert(config)
+
+    with pytest.raises(ConfigurationError):
+        store.update_signal_type("DemoConfig", 100, "SignalA", "NotAType")
+
+    store.add_signal(
+        "DemoConfig",
+        100,
+        new_name="SignalC",
+        offset="2",
+        signal_type="bool",
+        position="after",
+        relative_signal="SignalB",
+    )
+
+    refreshed = store.get("DemoConfig")
+    signal_c = refreshed.find_signal(100, "SignalC")
+    assert signal_c.signal_type == "BOOL"
+
+
 def test_signal_value_update_blocked_for_input(tmp_path: Path) -> None:
     storage = tmp_path / "configs.json"
     store = ConfigurationStore(storage_path=storage)
