@@ -53,42 +53,58 @@ class HandshakeDriver(Protocol):  # pragma: no cover - interface definition
 
 def _resolve_driver(config: SessionConfig) -> HandshakeDriver:
     try:  # pragma: no cover - optional dependency resolution
-        import pycomm3
+        from pycomm3 import CIPDriver, socket_
     except ImportError as exc:  # pragma: no cover - optional dependency resolution
         raise RuntimeError(
             "pycomm3 is required to perform a live handshake. Install pycipsim[pycomm3]."
         ) from exc
 
-    driver_cls = getattr(pycomm3, "LogixDriver", None)
-    if driver_cls is None:  # pragma: no cover - defensive
-        raise RuntimeError("pycomm3.LogixDriver is unavailable; cannot perform handshake")
+    address = config.ip_address
+    if config.slot is not None:
+        address = f"{address}/{config.slot}"
 
     class _DriverAdapter:
         def __init__(self) -> None:
-            port = config.port
-            timeout = config.timeout
-            params = {}
-            credentials = config.resolve_credentials()
-            if credentials.get("username"):
-                params["username"] = credentials["username"]
-            if credentials.get("password"):
-                params["password"] = credentials["password"]
-            address = config.ip_address
-            if config.slot is not None:
-                address = f"{address}/{config.slot}"
-            self._driver = driver_cls(address, port=port, timeout=timeout, **params)
+            self._driver = CIPDriver(address)
+            cfg = self._driver._cfg  # type: ignore[attr-defined]
+            cfg["port"] = config.port
+            cfg["socket_timeout"] = max(config.timeout, 0.1)
+            cfg["timeout"] = max(config.timeout, 0.1)
+            metadata = config.metadata or {}
+            max_size = metadata.get("max_connection_size_bytes")
+            if isinstance(max_size, int) and max_size > 0:
+                cfg["connection_size"] = min(max_size, 4000)
+            source = config.resolve_source_address()
+            if source:
+                source_ip, _ = source
+
+                class _BoundSocket(socket_.Socket):  # type: ignore[misc]
+                    def __init__(self, timeout: float, ip: str) -> None:
+                        super().__init__(timeout)
+                        self._source_ip = ip
+
+                    def connect(self, host: str, port: int) -> None:  # type: ignore[override]
+                        try:
+                            self.sock.bind((self._source_ip, 0))
+                        except OSError as exc:  # pragma: no cover - depends on network
+                            raise RuntimeError(
+                                f"Failed to bind to source interface {self._source_ip}: {exc}"
+                            ) from exc
+                        super().connect(host, port)
+
+                self._driver._sock = _BoundSocket(cfg["socket_timeout"], source_ip)
 
         def open(self) -> None:
-            self._driver.open()
+            if not self._driver.open():
+                raise RuntimeError("Failed to register ENIP session")
 
         def forward_open(self) -> None:
-            if hasattr(self._driver, "forward_open"):
-                self._driver.forward_open()
-            else:  # pragma: no cover - dependent on pycomm3 version
-                raise RuntimeError("forward_open not supported by this pycomm3 driver")
+            if not self._driver._forward_open():  # type: ignore[attr-defined]
+                raise RuntimeError("Failed to perform CIP forward open")
 
         def close(self) -> None:
-            self._driver.close()
+            with contextlib.suppress(Exception):
+                self._driver.close()
 
     return _DriverAdapter()
 
@@ -131,8 +147,20 @@ def perform_handshake(
 
     driver: Optional[HandshakeDriver] = None
     try:
-        driver = driver_builder(config)
-        driver.open()
+        try:
+            driver = driver_builder(config)
+        except Exception as exc:
+            detail = str(exc)
+            steps.append(HandshakeStep(HandshakePhase.ENIP_SESSION, False, detail))
+            return HandshakeResult(False, steps, error=detail, duration_ms=_elapsed_ms(start))
+
+        try:
+            driver.open()
+        except Exception as exc:  # pragma: no cover - depends on live hardware failures
+            detail = str(exc)
+            steps.append(HandshakeStep(HandshakePhase.ENIP_SESSION, False, detail))
+            return HandshakeResult(False, steps, error=detail, duration_ms=_elapsed_ms(start))
+
         steps.append(
             HandshakeStep(
                 HandshakePhase.ENIP_SESSION,
@@ -150,8 +178,9 @@ def perform_handshake(
                 )
             )
         except Exception as exc:  # pragma: no cover - requires hardware to fully exercise
-            steps.append(HandshakeStep(HandshakePhase.CIP_FORWARD_OPEN, False, str(exc)))
-            return HandshakeResult(False, steps, error=str(exc), duration_ms=_elapsed_ms(start))
+            detail = str(exc)
+            steps.append(HandshakeStep(HandshakePhase.CIP_FORWARD_OPEN, False, detail))
+            return HandshakeResult(False, steps, error=detail, duration_ms=_elapsed_ms(start))
     finally:
         if driver is not None:
             with contextlib.suppress(Exception):
@@ -161,8 +190,11 @@ def perform_handshake(
 
 
 def _default_tcp_connector(config: SessionConfig) -> None:
+    source_address = config.resolve_source_address()
     with contextlib.closing(
-        socket.create_connection((config.ip_address, config.port), config.timeout)
+        socket.create_connection(
+            (config.ip_address, config.port), config.timeout, source_address
+        )
     ):
         return
 
