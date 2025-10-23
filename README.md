@@ -33,10 +33,11 @@ All modules log through `pycipsim.logging_config` to honour the observability re
 
 ## Next Steps
 
-1. Add integration coverage that exercises real `pycomm3` sessions when hardware or emulators are available.
-2. Expand the web UI with live log streaming, UDP transport configuration, and richer assembly visualisations.
-3. Implement UDP transport adapters to satisfy the communications interface expectations in SRS §4.5.
-4. Extend CLI and web regression suites to cover failure messaging, report downloads, and session teardown scenarios.
+1. Deliver the live CIP I/O runtime outlined in SRS §3.7 by opening real sessions, running cyclic producer/consumer loops, bridging output edits to the wire, and decoding inbound payloads back into the UI.
+2. Add integration coverage that exercises real `pycomm3` sessions when hardware or emulators are available.
+3. Expand the web UI with live log streaming, UDP transport configuration, and richer assembly visualisations.
+4. Implement UDP transport adapters to satisfy the communications interface expectations in SRS §4.5.
+5. Extend CLI and web regression suites to cover failure messaging, report downloads, and session teardown scenarios.
 
 ## Repository Layout
 
@@ -149,7 +150,8 @@ this:
     "ip": "192.168.0.10",
     "port": 44818,
     "receive_address": "239.1.1.1",
-    "multicast": true
+    "multicast": true,
+    "interface": "eth0"
   },
   "assemblies": [
     {
@@ -167,6 +169,9 @@ this:
 
 Signals can be edited directly in the UI prior to starting the simulator. Once running, signal types and offsets are locked, but
 operators can use the provided set/clear controls to adjust payload values on the fly.
+
+Use the configuration panel to select the host network interface that should source CIP traffic. The choice is saved with the
+configuration and reused whenever the simulator starts, ensuring connections originate from the expected adapter.
 
 ### Batch & Parallel Execution
 
