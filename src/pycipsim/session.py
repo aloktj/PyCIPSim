@@ -191,43 +191,69 @@ class PyComm3Transport:
             raise TransportError(f"Assembly instance identifier '{instance}' is not valid.") from exc
 
         payload = request.payload or b""
-        start = time.perf_counter()
-        connected = bool(metadata.get("connected"))
-        try:
-            tag = self._driver.generic_message(
-                service=service_code,
-                class_code=0x04,
-                instance=instance_id,
-                attribute=3,
-                request_data=payload,
-                connected=connected,
-                name=request.service_code.lower(),
-            )
-        except Exception as exc:  # pragma: no cover - depends on network
-            raise TransportError(str(exc)) from exc
-        duration = (time.perf_counter() - start) * 1000
-        if tag.error:
-            status = str(tag.error)
+        preferred_connected = metadata.get("connected")
+        attempts: Iterable[bool]
+        if preferred_connected is None:
+            attempts = (False, True)
         else:
-            status = "SUCCESS"
-        response_payload: Optional[bytes]
-        if request.service_code == "GET_ASSEMBLY":
-            value = tag.value
-            if isinstance(value, bytes):
-                response_payload = value
-            elif isinstance(value, bytearray):
-                response_payload = bytes(value)
-            elif value is None:
-                response_payload = b""
+            attempts = (bool(preferred_connected),)
+
+        last_response: Optional[ServiceResponse] = None
+        for connected in attempts:
+            start = time.perf_counter()
+            try:
+                tag = self._driver.generic_message(
+                    service=service_code,
+                    class_code=0x04,
+                    instance=instance_id,
+                    attribute=3,
+                    request_data=payload,
+                    connected=connected,
+                    unconnected_send=not connected,
+                    name=request.service_code.lower(),
+                )
+            except Exception as exc:  # pragma: no cover - depends on network
+                raise TransportError(str(exc)) from exc
+            duration = (time.perf_counter() - start) * 1000
+            if tag.error:
+                status = str(tag.error)
             else:
-                response_payload = bytes(value)
-        else:
-            response_payload = payload if payload else None
-        return ServiceResponse(
+                status = "SUCCESS"
+            response_payload: Optional[bytes]
+            if request.service_code == "GET_ASSEMBLY":
+                value = tag.value
+                if isinstance(value, bytes):
+                    response_payload = value
+                elif isinstance(value, bytearray):
+                    response_payload = bytes(value)
+                elif value is None:
+                    response_payload = b""
+                else:
+                    response_payload = bytes(value)
+            else:
+                response_payload = payload if payload else None
+
+            response = ServiceResponse(
+                service=request.service_code,
+                status=status,
+                payload=response_payload,
+                round_trip_ms=duration,
+            )
+            if status == "SUCCESS":
+                return response
+
+            last_response = response
+            if preferred_connected is not None or connected:
+                return response
+
+            normalized_status = status.strip().lower()
+            if normalized_status not in {"too much data"}:
+                return response
+
+        return last_response or ServiceResponse(
             service=request.service_code,
-            status=status,
-            payload=response_payload,
-            round_trip_ms=duration,
+            status="UNKNOWN_ERROR",
+            payload=None,
         )
 
     def send(self, request: ServiceRequest) -> ServiceResponse:  # pragma: no cover - requires hardware
