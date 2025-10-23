@@ -78,6 +78,13 @@ It is assumed that users have access to Python development environments and can 
 3. The system shall prevent modification of signal types, offsets, and names while a simulation is running but permit payload value updates (set/clear) during execution.
 4. The system shall provide controls to start and stop the simulator using any saved configuration, updating the displayed handshake status accordingly.
 
+### 3.7 Live CIP I/O Runtime
+1. The system shall establish real TCP, ENIP register session, and CIP forward-open handshakes on demand, keeping connections active for the duration of a simulation.
+2. The system shall maintain cyclic producer and consumer loops that publish output assembly images and listen for input assembly payloads at configured intervals for both unicast and multicast transports.
+3. The system shall propagate runtime edits to output assembly values onto the active connection, rebuilding payload buffers and transmitting the updated data within the next cyclic interval.
+4. The system shall decode inbound assembly payloads into configured signals, update read-only values surfaced in the UI, and persist the captured state for later export.
+5. The system shall monitor connection health, recover from timeouts or aborts, and perform orderly forward-close or session teardown when the simulator stops.
+
 ## 4. External Interface Requirements
 
 ### 4.1 User Interfaces
