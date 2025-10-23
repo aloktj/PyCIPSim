@@ -33,7 +33,7 @@ class ActiveSimulation:
     configuration_name: str
     handshake: HandshakeResult
     started_at: datetime
-    runtime: CIPIORuntime
+    runtime: Optional[CIPIORuntime]
 
 
 class SimulatorManager:
@@ -70,22 +70,29 @@ class SimulatorManager:
                 network_interface=config.network_interface,
                 metadata=config.metadata,
             )
-            flag = self._simulate_handshake if simulate_handshake is None else simulate_handshake
-            handshake = perform_handshake(session_config, simulate=flag)
+            mode = (config.runtime_mode or "simulated").lower()
+            should_run_runtime = mode == "live"
+            if simulate_handshake is not None:
+                handshake_simulated = simulate_handshake
+            else:
+                handshake_simulated = self._simulate_handshake or not should_run_runtime
+            handshake = perform_handshake(session_config, simulate=handshake_simulated)
             if not handshake.success:
                 raise RuntimeError(handshake.error or "Handshake failed")
-            session = self._session_factory(session_config, config)
-            runtime = CIPIORuntime(
-                configuration=config,
-                store=store,
-                session=session,
-                cycle_interval=self._cycle_interval,
-            )
-            try:
-                runtime.start()
-            except Exception:
-                runtime.stop()
-                raise
+            runtime: Optional[CIPIORuntime] = None
+            if should_run_runtime:
+                session = self._session_factory(session_config, config)
+                runtime = CIPIORuntime(
+                    configuration=config,
+                    store=store,
+                    session=session,
+                    cycle_interval=self._cycle_interval,
+                )
+                try:
+                    runtime.start()
+                except Exception:
+                    runtime.stop()
+                    raise
             self._active = ActiveSimulation(
                 configuration_name=config.name,
                 handshake=handshake,
@@ -120,7 +127,8 @@ class SimulatorManager:
     def notify_output_update(self, config_name: str) -> None:
         active = self.active()
         if active and active.configuration_name == config_name:
-            active.runtime.notify_output_update()
+            if active.runtime is not None:
+                active.runtime.notify_output_update()
 
 
 def _templates() -> Jinja2Templates:
@@ -282,6 +290,7 @@ def get_app(
         receive_address: Optional[str] = Form(None),
         multicast: Optional[str] = Form(None),
         network_interface: Optional[str] = Form(None),
+        runtime_mode: Optional[str] = Form(None),
     ) -> RedirectResponse:
         try:
             manager.ensure_config_mutable(name)
@@ -292,6 +301,7 @@ def get_app(
                 receive_address=receive_address,
                 multicast=bool(multicast),
                 network_interface=network_interface,
+                runtime_mode=runtime_mode,
             )
         except RuntimeError as exc:
             return redirect("/", error=str(exc))

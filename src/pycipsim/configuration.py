@@ -37,6 +37,10 @@ CIP_SIGNAL_TYPES: List[str] = [
 
 _SIGNAL_TYPE_LOOKUP = {item.lower(): item for item in CIP_SIGNAL_TYPES}
 
+# Runtime operating modes supported by the simulator. "simulated" keeps the
+# legacy behaviour (no live transport), while "live" enables network sessions.
+RUNTIME_MODES: tuple[str, ...] = ("simulated", "live")
+
 
 # Nominal bit widths for well-known CIP signal types.
 _CIP_SIGNAL_TYPE_BITS: Dict[str, int] = {
@@ -112,6 +116,17 @@ def validate_signal_type(value: str) -> str:
 
 class ConfigurationError(ValueError):
     """Raised when configuration data is invalid."""
+
+
+def normalize_runtime_mode(value: Optional[str]) -> str:
+    """Validate and canonicalize the configured runtime mode."""
+
+    text = "" if value is None else str(value).strip().lower()
+    if not text:
+        return "simulated"
+    if text not in RUNTIME_MODES:
+        raise ConfigurationError(f"Unsupported runtime mode '{value}'.")
+    return text
 
 
 @dataclass(slots=True)
@@ -313,6 +328,7 @@ class SimulatorConfiguration:
     receive_address: Optional[str] = None
     multicast: bool = False
     network_interface: Optional[str] = None
+    runtime_mode: str = "simulated"
     metadata: Dict[str, Any] = field(default_factory=dict)
     assemblies: List[AssemblyDefinition] = field(default_factory=list)
 
@@ -335,6 +351,11 @@ class SimulatorConfiguration:
             raise ConfigurationError("Configuration metadata must be a mapping")
         for assembly in assemblies:
             assembly.rebuild_padding()
+        runtime_mode = normalize_runtime_mode(
+            target.get("mode") if isinstance(target, dict) else None
+        )
+        if runtime_mode == "simulated" and "runtime_mode" in raw:
+            runtime_mode = normalize_runtime_mode(raw.get("runtime_mode"))
         return cls(
             name=str(name),
             target_ip=str(target_ip),
@@ -342,6 +363,7 @@ class SimulatorConfiguration:
             receive_address=str(receive_address) if receive_address else None,
             multicast=multicast,
             network_interface=str(network_interface) if network_interface else None,
+            runtime_mode=runtime_mode,
             metadata=metadata,
             assemblies=assemblies,
         )
@@ -355,6 +377,7 @@ class SimulatorConfiguration:
                 "receive_address": self.receive_address,
                 "multicast": self.multicast,
                 "interface": self.network_interface,
+                "mode": self.runtime_mode,
             },
             "metadata": self.metadata,
             "assemblies": [assembly.to_dict() for assembly in self.assemblies],

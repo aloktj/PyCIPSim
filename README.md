@@ -151,7 +151,8 @@ this:
     "port": 44818,
     "receive_address": "239.1.1.1",
     "multicast": true,
-    "interface": "eth0"
+    "interface": "eth0",
+    "mode": "live"
   },
   "assemblies": [
     {
@@ -171,7 +172,9 @@ Signals can be edited directly in the UI prior to starting the simulator. Once r
 operators can use the provided set/clear controls to adjust payload values on the fly.
 
 Use the configuration panel to select the host network interface that should source CIP traffic. The choice is saved with the
-configuration and reused whenever the simulator starts, ensuring connections originate from the expected adapter.
+configuration and reused whenever the simulator starts, ensuring connections originate from the expected adapter. The same
+panel exposes a **Connection Mode** selector: choose *Simulated* to exercise the UI without opening sockets, or switch to *Live*
+to attempt real TCP/ENIP/CIP exchanges with the target device.
 
 ### Batch & Parallel Execution
 

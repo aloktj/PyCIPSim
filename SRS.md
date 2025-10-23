@@ -87,6 +87,8 @@ It is assumed that users have access to Python development environments and can 
 5. The system shall monitor connection health, recover from timeouts or aborts, and perform orderly forward-close or session teardown when the simulator stops.
 
 **Implementation note:** The current runtime satisfies items 1–4 for unicast sessions by streaming assembly images through the web-managed CIPSession transport. Multicast delivery will be incorporated alongside the UDP adapters described in §4.5.
+Operators can continue running the simulator in simulated mode; selecting the live connection mode in the web UI enables the
+network-backed behaviour described above.
 
 ## 4. External Interface Requirements
 

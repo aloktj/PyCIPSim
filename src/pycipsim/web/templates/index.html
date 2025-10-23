@@ -171,6 +171,14 @@
                   </select>
                 </label>
               </div>
+              <div class="inline-field">
+                <label>Connection Mode
+                  <select name="runtime_mode" {% if is_running %}disabled{% endif %}>
+                    <option value="simulated" {% if current.runtime_mode != 'live' %}selected{% endif %}>Simulated</option>
+                    <option value="live" {% if current.runtime_mode == 'live' %}selected{% endif %}>Live</option>
+                  </select>
+                </label>
+              </div>
               <label>
                 <input type="checkbox" name="multicast" value="on" {% if current.multicast %}checked{% endif %} {% if is_running %}disabled{% endif %} />
                 Multicast
@@ -179,6 +187,14 @@
                 <button type="submit" {% if is_running %}disabled{% endif %}>Save Target</button>
               </div>
             </form>
+            <p class="disabled-note">
+              Connection mode is
+              {% if current.runtime_mode == 'live' %}
+                <strong>Live</strong> (attempts real TCP/ENIP/CIP traffic)
+              {% else %}
+                <strong>Simulated</strong> (no network connections are opened)
+              {% endif %}.
+            </p>
             {% if is_running %}
               <p class="disabled-note">Target fields are locked while the simulator is running.</p>
             {% endif %}

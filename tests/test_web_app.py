@@ -83,7 +83,12 @@ def manager(store: ConfigurationStore):
 def _scenario_payload(name: str = "WebConfig") -> dict:
     return {
         "name": name,
-        "target": {"ip": "10.10.10.10", "port": 44818, "interface": "eth0"},
+        "target": {
+            "ip": "10.10.10.10",
+            "port": 44818,
+            "interface": "eth0",
+            "mode": "live",
+        },
         "assemblies": [
             {
                 "id": 200,
@@ -118,6 +123,7 @@ def test_upload_and_start_flow(
     start_response = client.post("/configs/WebConfig/start", follow_redirects=False)
     assert start_response.status_code == 303
     assert manager.active() is not None
+    assert manager.active().runtime is not None
 
     value_response = client.post(
         "/configs/WebConfig/assemblies/200/signals/SigA/value",
@@ -154,6 +160,7 @@ def test_update_target_via_web(
             "receive_address": "",
             "multicast": "",
             "network_interface": "eth0",
+            "runtime_mode": "simulated",
         },
         follow_redirects=False,
     )
@@ -162,6 +169,24 @@ def test_update_target_via_web(
     refreshed = store.get("WebConfig")
     assert refreshed.target_ip == "10.0.0.20"
     assert refreshed.network_interface == "eth0"
+    assert refreshed.runtime_mode == "simulated"
+
+
+def test_start_simulated_mode_skips_runtime(
+    store: ConfigurationStore, manager: SimulatorManager
+) -> None:
+    payload = _scenario_payload()
+    payload["target"]["mode"] = "simulated"
+    config = SimulatorConfiguration.from_dict(payload)
+    store.upsert(config)
+    app = get_app(store=store, manager=manager)
+    client = TestClient(app)
+
+    response = client.post("/configs/WebConfig/start", follow_redirects=False)
+    assert response.status_code == 303
+    active = manager.active()
+    assert active is not None
+    assert active.runtime is None
 
 
 def test_type_update_blocked_when_running(

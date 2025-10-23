@@ -12,6 +12,7 @@ from .configuration import (
     ConfigurationError,
     SimulatorConfiguration,
     SignalDefinition,
+    normalize_runtime_mode,
     validate_signal_type,
 )
 
@@ -138,6 +139,7 @@ class ConfigurationStore:
         receive_address: Optional[str],
         multicast: bool,
         network_interface: Optional[str],
+        runtime_mode: Optional[str],
     ) -> SimulatorConfiguration:
         with self._lock:
             configuration = self.get(name)
@@ -154,6 +156,8 @@ class ConfigurationStore:
             configuration.receive_address = receive_address or None
             configuration.multicast = multicast
             configuration.network_interface = (network_interface or None)
+            if runtime_mode:
+                configuration.runtime_mode = normalize_runtime_mode(runtime_mode)
             self._persist()
             return configuration
 

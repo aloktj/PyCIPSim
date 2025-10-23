@@ -50,6 +50,7 @@ def test_upsert_and_reload(tmp_path: Path) -> None:
     assert configs[0].name == "DemoConfig"
     assert configs[0].target_ip == "192.168.1.10"
     assert configs[0].network_interface == "eth0"
+    assert configs[0].runtime_mode == "simulated"
 
 
 def test_signal_updates_persist(tmp_path: Path) -> None:
@@ -83,11 +84,31 @@ def test_update_target_records_interface(tmp_path: Path) -> None:
         receive_address="",
         multicast=False,
         network_interface="eth1",
+        runtime_mode="live",
     )
 
     refreshed = store.get("DemoConfig")
     assert refreshed.target_ip == "10.0.0.5"
     assert refreshed.network_interface == "eth1"
+    assert refreshed.runtime_mode == "live"
+
+
+def test_update_target_rejects_invalid_runtime_mode(tmp_path: Path) -> None:
+    storage = tmp_path / "configs.json"
+    store = ConfigurationStore(storage_path=storage)
+    config = _sample_configuration(direction="output")
+    store.upsert(config)
+
+    with pytest.raises(ConfigurationError):
+        store.update_target(
+            "DemoConfig",
+            target_ip="10.0.0.5",
+            target_port="44818",
+            receive_address="",
+            multicast=False,
+            network_interface="eth0",
+            runtime_mode="invalid",
+        )
 
 
 def test_signal_type_validation(tmp_path: Path) -> None:
