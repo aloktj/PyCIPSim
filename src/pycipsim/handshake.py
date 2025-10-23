@@ -131,8 +131,20 @@ def perform_handshake(
 
     driver: Optional[HandshakeDriver] = None
     try:
-        driver = driver_builder(config)
-        driver.open()
+        try:
+            driver = driver_builder(config)
+        except Exception as exc:
+            detail = str(exc)
+            steps.append(HandshakeStep(HandshakePhase.ENIP_SESSION, False, detail))
+            return HandshakeResult(False, steps, error=detail, duration_ms=_elapsed_ms(start))
+
+        try:
+            driver.open()
+        except Exception as exc:  # pragma: no cover - depends on live hardware failures
+            detail = str(exc)
+            steps.append(HandshakeStep(HandshakePhase.ENIP_SESSION, False, detail))
+            return HandshakeResult(False, steps, error=detail, duration_ms=_elapsed_ms(start))
+
         steps.append(
             HandshakeStep(
                 HandshakePhase.ENIP_SESSION,
@@ -150,8 +162,9 @@ def perform_handshake(
                 )
             )
         except Exception as exc:  # pragma: no cover - requires hardware to fully exercise
-            steps.append(HandshakeStep(HandshakePhase.CIP_FORWARD_OPEN, False, str(exc)))
-            return HandshakeResult(False, steps, error=str(exc), duration_ms=_elapsed_ms(start))
+            detail = str(exc)
+            steps.append(HandshakeStep(HandshakePhase.CIP_FORWARD_OPEN, False, detail))
+            return HandshakeResult(False, steps, error=detail, duration_ms=_elapsed_ms(start))
     finally:
         if driver is not None:
             with contextlib.suppress(Exception):
@@ -161,8 +174,11 @@ def perform_handshake(
 
 
 def _default_tcp_connector(config: SessionConfig) -> None:
+    source_address = config.resolve_source_address()
     with contextlib.closing(
-        socket.create_connection((config.ip_address, config.port), config.timeout)
+        socket.create_connection(
+            (config.ip_address, config.port), config.timeout, source_address
+        )
     ):
         return
 

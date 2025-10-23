@@ -72,3 +72,65 @@ def test_custom_driver_handles_forward_open() -> None:
 
     assert result.success
     assert events == ["tcp", "open", "forward_open", "close"]
+
+
+def test_driver_factory_failure_records_enip_step() -> None:
+    config = SessionConfig()
+
+    def connector(_: SessionConfig) -> None:
+        return None
+
+    def driver_factory(_: SessionConfig):
+        raise RuntimeError("driver unavailable")
+
+    result = perform_handshake(
+        config,
+        simulate=False,
+        tcp_connector=connector,
+        driver_factory=driver_factory,
+    )
+
+    assert not result.success
+    assert result.error == "driver unavailable"
+    assert result.steps[-1].phase == HandshakePhase.ENIP_SESSION
+    assert not result.steps[-1].success
+    assert result.steps[-1].detail == "driver unavailable"
+
+
+def test_open_failure_marks_enip_step_failed() -> None:
+    config = SessionConfig()
+    events: List[str] = []
+
+    class DummyDriver:
+        def open(self) -> None:
+            events.append("open")
+            raise RuntimeError("open failure")
+
+        def forward_open(self) -> None:  # pragma: no cover - should not be called
+            raise AssertionError("forward_open should not run when open fails")
+
+        def close(self) -> None:
+            events.append("close")
+
+    def driver_factory(_: SessionConfig) -> DummyDriver:
+        return DummyDriver()
+
+    def connector(_: SessionConfig) -> None:
+        events.append("tcp")
+
+    result = perform_handshake(
+        config,
+        simulate=False,
+        driver_factory=driver_factory,
+        tcp_connector=connector,
+    )
+
+    assert not result.success
+    assert result.error == "open failure"
+    assert [step.phase for step in result.steps] == [
+        HandshakePhase.TCP_CONNECT,
+        HandshakePhase.ENIP_SESSION,
+    ]
+    assert not result.steps[-1].success
+    assert result.steps[-1].detail == "open failure"
+    assert events == ["tcp", "open", "close"]
