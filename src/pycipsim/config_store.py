@@ -5,7 +5,7 @@ import copy
 import json
 import threading
 from pathlib import Path
-from typing import Dict, Iterable, Optional
+from typing import Any, Dict, Iterable, Optional
 
 from .configuration import (
     AssemblyDefinition,
@@ -77,6 +77,33 @@ class ConfigurationStore:
             signal.value = value
             self._persist()
             return signal
+
+    def update_input_values(
+        self,
+        name: str,
+        assembly_id: int,
+        values: Dict[str, Any],
+        *,
+        persist: bool = False,
+    ) -> None:
+        """Update input-direction assembly values, typically from runtime data."""
+
+        with self._lock:
+            configuration = self.get(name)
+            assembly = configuration.find_assembly(assembly_id)
+            direction = (assembly.direction or "").lower()
+            if direction not in {"input", "in"}:
+                raise ConfigurationError(
+                    f"Assembly '{assembly.name}' is not input-direction; refusing to update values."
+                )
+            for signal in assembly.signals:
+                if signal.is_padding:
+                    continue
+                if signal.name not in values:
+                    continue
+                signal.value = values[signal.name]
+            if persist:
+                self._persist()
 
     def update_signal_type(
         self, name: str, assembly_id: int, signal_name: str, new_type: str

@@ -158,6 +158,38 @@ class PyComm3Transport:
         self._driver.close()
 
     def send(self, request: ServiceRequest) -> ServiceResponse:  # pragma: no cover - requires hardware
+        metadata = request.metadata or {}
+        if request.service_code in {"GET_ASSEMBLY", "SET_ASSEMBLY"}:
+            instance = metadata.get("instance") or request.tag_path
+            try:
+                instance_id = int(str(instance), 0)
+            except (TypeError, ValueError) as exc:
+                raise TransportError(
+                    f"Assembly instance identifier '{instance}' is not valid."
+                ) from exc
+            service_code = 0x0E if request.service_code == "GET_ASSEMBLY" else 0x10
+            try:
+                result = self._driver.generic_message(
+                    service=service_code,
+                    class_code=0x04,
+                    instance=instance_id,
+                    attribute=3,
+                    request_data=request.payload,
+                    response_data=True,
+                )
+            except Exception as exc:
+                raise TransportError(str(exc)) from exc
+            payload = result.get("value")
+            if isinstance(payload, bytearray):
+                payload = bytes(payload)
+            elif isinstance(payload, list):
+                payload = bytes(payload)
+            return ServiceResponse(
+                service=request.service_code,
+                status=result.get("status", "SUCCESS"),
+                payload=payload,
+                round_trip_ms=result.get("duration", 0.0) * 1000,
+            )
         result = self._driver.generic_message(
             service=request.service_code,
             request_data=request.payload,

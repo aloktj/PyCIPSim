@@ -28,7 +28,7 @@ All modules log through `pycipsim.logging_config` to honour the observability re
 - ✅ Optional `[pycomm3]` extra now resolves against the published `pycomm3==1.2.14` release, so hardware connectivity installs succeed on fresh environments.
 - ✅ `pycipsim scaffold` creates intermediate directories before writing scenario templates, unblocking first-run usage.
 - ✅ `pycipsim benchmark` validates the ≥100 msg/s performance requirement called out in SRS §5.1 when run against bundled profiles.
-- ✅ The FastAPI web dashboard persists uploaded CIP configurations, enforces signal-type locking while simulations run, and exposes payload controls for live sessions.
+- ✅ The FastAPI web dashboard persists uploaded CIP configurations, enforces signal-type locking while simulations run, and now drives a live CIP runtime that streams output edits and decodes inbound payloads in real time.
 - ✅ `perform_handshake` renders explicit TCP → ENIP → CIP forward-open progress so operators can confirm originator behaviour before exchanging cyclic I/O.
 
 ## Next Steps

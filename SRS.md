@@ -86,12 +86,7 @@ It is assumed that users have access to Python development environments and can 
 4. The system shall decode inbound assembly payloads into configured signals, update read-only values surfaced in the UI, and persist the captured state for later export.
 5. The system shall monitor connection health, recover from timeouts or aborts, and perform orderly forward-close or session teardown when the simulator stops.
 
-### 3.7 Live CIP I/O Runtime
-1. The system shall establish real TCP, ENIP register session, and CIP forward-open handshakes on demand, keeping connections active for the duration of a simulation.
-2. The system shall maintain cyclic producer and consumer loops that publish output assembly images and listen for input assembly payloads at configured intervals for both unicast and multicast transports.
-3. The system shall propagate runtime edits to output assembly values onto the active connection, rebuilding payload buffers and transmitting the updated data within the next cyclic interval.
-4. The system shall decode inbound assembly payloads into configured signals, update read-only values surfaced in the UI, and persist the captured state for later export.
-5. The system shall monitor connection health, recover from timeouts or aborts, and perform orderly forward-close or session teardown when the simulator stops.
+**Implementation note:** The current runtime satisfies items 1–4 for unicast sessions by streaming assembly images through the web-managed CIPSession transport. Multicast delivery will be incorporated alongside the UDP adapters described in §4.5.
 
 ## 4. External Interface Requirements
 

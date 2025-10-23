@@ -1,13 +1,48 @@
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
+from typing import List
 
 import pytest
 from fastapi.testclient import TestClient
 
 from pycipsim.config_store import ConfigurationStore, SimulatorConfiguration
+from pycipsim.device import ServiceResponse
+from pycipsim.session import CIPSession, SessionConfig
 from pycipsim.web.app import SimulatorManager, get_app
+
+
+class _StubTransport:
+    def __init__(self, configuration: SimulatorConfiguration) -> None:
+        self._configuration = configuration
+        self.connected = False
+        self.output_payloads: dict[int, bytes] = {}
+        self.input_payloads: dict[int, bytes] = {}
+        self.requests: List[str] = []
+
+    def connect(self) -> None:
+        self.connected = True
+
+    def disconnect(self) -> None:
+        self.connected = False
+
+    def send(self, request):  # type: ignore[override]
+        metadata = request.metadata or {}
+        instance_raw = metadata.get("instance")
+        instance_id = int(str(instance_raw), 0) if instance_raw is not None else 0
+        self.requests.append(request.service_code)
+        if request.service_code == "SET_ASSEMBLY":
+            self.output_payloads[instance_id] = request.payload or b""
+            return ServiceResponse(service=request.service_code, status="SUCCESS")
+        if request.service_code == "GET_ASSEMBLY":
+            payload = self.input_payloads.get(instance_id)
+            if payload is None:
+                assembly = self._configuration.find_assembly(instance_id)
+                payload = bytes((assembly.size_bits + 7) // 8)
+            return ServiceResponse(service=request.service_code, status="SUCCESS", payload=payload)
+        return ServiceResponse(service=request.service_code, status="SUCCESS")
 
 
 @pytest.fixture(autouse=True)
@@ -21,6 +56,28 @@ def fake_interfaces(monkeypatch: pytest.MonkeyPatch) -> None:
 @pytest.fixture()
 def store(tmp_path: Path) -> ConfigurationStore:
     return ConfigurationStore(storage_path=tmp_path / "configs.json")
+
+
+@pytest.fixture()
+def manager(store: ConfigurationStore):
+    transports: List[_StubTransport] = []
+
+    def factory(session_config: SessionConfig, sim_config: SimulatorConfiguration) -> CIPSession:
+        transport = _StubTransport(sim_config)
+        transports.append(transport)
+        session = CIPSession(session_config, transport=transport)
+        session.config.allow_external = True
+        session.config.allowed_hosts = tuple(list(session.config.allowed_hosts) + [session_config.ip_address])
+        return session
+
+    manager = SimulatorManager(
+        session_factory=factory,
+        cycle_interval=0.01,
+        simulate_handshake=True,
+    )
+    setattr(manager, "_test_transports", transports)
+    yield manager
+    manager.stop()
 
 
 def _scenario_payload(name: str = "WebConfig") -> dict:
@@ -41,8 +98,9 @@ def _scenario_payload(name: str = "WebConfig") -> dict:
     }
 
 
-def test_upload_and_start_flow(store: ConfigurationStore) -> None:
-    manager = SimulatorManager()
+def test_upload_and_start_flow(
+    store: ConfigurationStore, manager: SimulatorManager
+) -> None:
     app = get_app(store=store, manager=manager)
     client = TestClient(app)
 
@@ -70,9 +128,19 @@ def test_upload_and_start_flow(store: ConfigurationStore) -> None:
     config = store.get("WebConfig")
     assert config.find_signal(200, "SigA").value == "1"
 
+    transports = getattr(manager, "_test_transports")
+    assert transports
+    transport = transports[0]
+    for _ in range(50):
+        if transport.output_payloads.get(200) == b"\x01":
+            break
+        time.sleep(0.02)
+    assert transport.output_payloads.get(200) == b"\x01"
 
-def test_update_target_via_web(store: ConfigurationStore) -> None:
-    manager = SimulatorManager()
+
+def test_update_target_via_web(
+    store: ConfigurationStore, manager: SimulatorManager
+) -> None:
     config = SimulatorConfiguration.from_dict(_scenario_payload())
     store.upsert(config)
     app = get_app(store=store, manager=manager)
@@ -96,11 +164,12 @@ def test_update_target_via_web(store: ConfigurationStore) -> None:
     assert refreshed.network_interface == "eth0"
 
 
-def test_type_update_blocked_when_running(store: ConfigurationStore) -> None:
-    manager = SimulatorManager()
+def test_type_update_blocked_when_running(
+    store: ConfigurationStore, manager: SimulatorManager
+) -> None:
     config = SimulatorConfiguration.from_dict(_scenario_payload())
     store.upsert(config)
-    manager.start(config)
+    manager.start(config, store)
     app = get_app(store=store, manager=manager)
     client = TestClient(app)
 
@@ -115,8 +184,9 @@ def test_type_update_blocked_when_running(store: ConfigurationStore) -> None:
     assert config_after.find_signal(200, "SigA").signal_type == "BOOL"
 
 
-def test_invalid_signal_type_rejected(store: ConfigurationStore) -> None:
-    manager = SimulatorManager()
+def test_invalid_signal_type_rejected(
+    store: ConfigurationStore, manager: SimulatorManager
+) -> None:
     config = SimulatorConfiguration.from_dict(_scenario_payload())
     store.upsert(config)
     app = get_app(store=store, manager=manager)
@@ -133,8 +203,9 @@ def test_invalid_signal_type_rejected(store: ConfigurationStore) -> None:
     assert store.get("WebConfig").find_signal(200, "SigA").signal_type == "BOOL"
 
 
-def test_value_update_rejected_for_input_assembly(store: ConfigurationStore) -> None:
-    manager = SimulatorManager()
+def test_value_update_rejected_for_input_assembly(
+    store: ConfigurationStore, manager: SimulatorManager
+) -> None:
     payload = _scenario_payload()
     payload["assemblies"][0]["direction"] = "input"
     config = SimulatorConfiguration.from_dict(payload)
@@ -153,8 +224,9 @@ def test_value_update_rejected_for_input_assembly(store: ConfigurationStore) -> 
     assert config_after.find_signal(200, "SigA").value == "0"
 
 
-def test_remove_signal_from_web(store: ConfigurationStore) -> None:
-    manager = SimulatorManager()
+def test_remove_signal_from_web(
+    store: ConfigurationStore, manager: SimulatorManager
+) -> None:
     config = SimulatorConfiguration.from_dict(_scenario_payload())
     store.upsert(config)
     app = get_app(store=store, manager=manager)
@@ -170,8 +242,9 @@ def test_remove_signal_from_web(store: ConfigurationStore) -> None:
     assert assembly.signals == []
 
 
-def test_update_assembly_metadata_via_web(store: ConfigurationStore) -> None:
-    manager = SimulatorManager()
+def test_update_assembly_metadata_via_web(
+    store: ConfigurationStore, manager: SimulatorManager
+) -> None:
     payload = _scenario_payload()
     payload["assemblies"].append(
         {
@@ -197,11 +270,12 @@ def test_update_assembly_metadata_via_web(store: ConfigurationStore) -> None:
     assert refreshed.find_assembly(300).direction == "input"
 
 
-def test_assembly_metadata_update_blocked_when_running(store: ConfigurationStore) -> None:
-    manager = SimulatorManager()
+def test_assembly_metadata_update_blocked_when_running(
+    store: ConfigurationStore, manager: SimulatorManager
+) -> None:
     config = SimulatorConfiguration.from_dict(_scenario_payload())
     store.upsert(config)
-    manager.start(config)
+    manager.start(config, store)
     app = get_app(store=store, manager=manager)
     client = TestClient(app)
 
@@ -216,8 +290,9 @@ def test_assembly_metadata_update_blocked_when_running(store: ConfigurationStore
     assert store.get("WebConfig").find_assembly(200).assembly_id == 200
 
 
-def test_index_groups_assemblies_by_direction(store: ConfigurationStore) -> None:
-    manager = SimulatorManager()
+def test_index_groups_assemblies_by_direction(
+    store: ConfigurationStore, manager: SimulatorManager
+) -> None:
     payload = _scenario_payload()
     payload["assemblies"].append(
         {
@@ -252,8 +327,9 @@ def test_index_groups_assemblies_by_direction(store: ConfigurationStore) -> None
     assert "Assembly InputOne (#310)" in input_section
 
 
-def test_add_and_remove_assembly_via_web(store: ConfigurationStore) -> None:
-    manager = SimulatorManager()
+def test_add_and_remove_assembly_via_web(
+    store: ConfigurationStore, manager: SimulatorManager
+) -> None:
     config = SimulatorConfiguration.from_dict(_scenario_payload())
     store.upsert(config)
     app = get_app(store=store, manager=manager)
@@ -286,11 +362,12 @@ def test_add_and_remove_assembly_via_web(store: ConfigurationStore) -> None:
     assert all(assembly.assembly_id != 300 for assembly in refreshed.assemblies)
 
 
-def test_add_assembly_blocked_when_running(store: ConfigurationStore) -> None:
-    manager = SimulatorManager()
+def test_add_assembly_blocked_when_running(
+    store: ConfigurationStore, manager: SimulatorManager
+) -> None:
     config = SimulatorConfiguration.from_dict(_scenario_payload())
     store.upsert(config)
-    manager.start(config)
+    manager.start(config, store)
     app = get_app(store=store, manager=manager)
     client = TestClient(app)
 
@@ -309,3 +386,24 @@ def test_add_assembly_blocked_when_running(store: ConfigurationStore) -> None:
     assert "error=" in response.headers["location"]
     refreshed = store.get("WebConfig")
     assert all(assembly.assembly_id != 300 for assembly in refreshed.assemblies)
+
+
+def test_input_poll_updates_store(store: ConfigurationStore, manager: SimulatorManager) -> None:
+    payload = _scenario_payload()
+    payload["assemblies"][0]["direction"] = "input"
+    payload["assemblies"][0]["signals"][0]["value"] = "0"
+    config = SimulatorConfiguration.from_dict(payload)
+    store.upsert(config)
+
+    manager.start(config, store)
+    transports = getattr(manager, "_test_transports")
+    transport = transports[0]
+    transport.input_payloads[200] = b"\x01"
+
+    for _ in range(50):
+        if store.get("WebConfig").find_signal(200, "SigA").value == "1":
+            break
+        time.sleep(0.02)
+
+    assert store.get("WebConfig").find_signal(200, "SigA").value == "1"
+    manager.stop()

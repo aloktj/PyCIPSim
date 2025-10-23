@@ -7,7 +7,7 @@ import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Callable, Dict, List, Optional
 from urllib.parse import urlencode
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
@@ -22,7 +22,8 @@ from ..config_store import (
 )
 from ..configuration import CIP_SIGNAL_TYPES
 from ..handshake import HandshakeResult, perform_handshake
-from ..session import SessionConfig
+from ..runtime import CIPIORuntime
+from ..session import CIPSession, SessionConfig
 
 
 @dataclass
@@ -32,16 +33,34 @@ class ActiveSimulation:
     configuration_name: str
     handshake: HandshakeResult
     started_at: datetime
+    runtime: CIPIORuntime
 
 
 class SimulatorManager:
     """Coordinate start/stop operations for configurations."""
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        session_factory: Optional[
+            Callable[[SessionConfig, SimulatorConfiguration], CIPSession]
+        ] = None,
+        cycle_interval: float = 0.1,
+        simulate_handshake: bool = False,
+    ) -> None:
         self._lock = threading.RLock()
         self._active: Optional[ActiveSimulation] = None
+        self._session_factory = session_factory or (lambda cfg, _config: CIPSession(cfg))
+        self._cycle_interval = cycle_interval
+        self._simulate_handshake = simulate_handshake
 
-    def start(self, config: SimulatorConfiguration, simulate_handshake: bool = True) -> HandshakeResult:
+    def start(
+        self,
+        config: SimulatorConfiguration,
+        store: ConfigurationStore,
+        *,
+        simulate_handshake: Optional[bool] = None,
+    ) -> HandshakeResult:
         with self._lock:
             if self._active is not None:
                 raise RuntimeError("A simulation is already running. Stop it before starting a new one.")
@@ -51,19 +70,38 @@ class SimulatorManager:
                 network_interface=config.network_interface,
                 metadata=config.metadata,
             )
-            handshake = perform_handshake(session_config, simulate=simulate_handshake)
+            flag = self._simulate_handshake if simulate_handshake is None else simulate_handshake
+            handshake = perform_handshake(session_config, simulate=flag)
             if not handshake.success:
                 raise RuntimeError(handshake.error or "Handshake failed")
+            session = self._session_factory(session_config, config)
+            runtime = CIPIORuntime(
+                configuration=config,
+                store=store,
+                session=session,
+                cycle_interval=self._cycle_interval,
+            )
+            try:
+                runtime.start()
+            except Exception:
+                runtime.stop()
+                raise
             self._active = ActiveSimulation(
                 configuration_name=config.name,
                 handshake=handshake,
                 started_at=datetime.now(timezone.utc),
+                runtime=runtime,
             )
             return handshake
 
     def stop(self) -> None:
+        runtime: Optional[CIPIORuntime] = None
         with self._lock:
+            if self._active is not None:
+                runtime = self._active.runtime
             self._active = None
+        if runtime is not None:
+            runtime.stop()
 
     def active(self) -> Optional[ActiveSimulation]:
         with self._lock:
@@ -78,6 +116,11 @@ class SimulatorManager:
 
     def ensure_type_mutable(self, config_name: str) -> None:
         self.ensure_config_mutable(config_name)
+
+    def notify_output_update(self, config_name: str) -> None:
+        active = self.active()
+        if active and active.configuration_name == config_name:
+            active.runtime.notify_output_update()
 
 
 def _templates() -> Jinja2Templates:
@@ -191,7 +234,7 @@ def get_app(
         except ConfigurationNotFoundError:
             raise HTTPException(status_code=404, detail="Configuration not found")
         try:
-            handshake = manager.start(config)
+            handshake = manager.start(config, store)
         except RuntimeError as exc:
             return redirect("/", error=str(exc))
         return redirect(
@@ -223,6 +266,7 @@ def get_app(
         try:
             payload = None if action == "clear" else value
             store.update_signal_value(name, assembly_id, signal_name, payload)
+            manager.notify_output_update(name)
         except ConfigurationNotFoundError:
             return redirect("/", error="Configuration not found")
         except ConfigurationError as exc:

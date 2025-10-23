@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import math
+import struct
 from typing import Any, Dict, Iterable, List, Optional
 
 
@@ -67,6 +69,19 @@ _PADDING_TYPE_CANDIDATES: List[tuple[int, str]] = [
     (16, "UINT"),
     (8, "USINT"),
 ]
+
+_SIGNED_SIGNAL_TYPES = {"SINT", "INT", "DINT", "LINT"}
+_UNSIGNED_SIGNAL_TYPES = {
+    "USINT",
+    "UINT",
+    "UDINT",
+    "ULINT",
+    "BYTE",
+    "WORD",
+    "DWORD",
+    "LWORD",
+}
+_FLOAT_SIGNAL_TYPES = {"REAL", "LREAL"}
 
 
 def canonicalize_signal_type(value: str) -> str:
@@ -452,4 +467,192 @@ def _build_padding_for_gap(start: int, length: int) -> List[SignalDefinition]:
             )
 
     return padding
+
+
+def _total_bytes(bit_length: int) -> int:
+    return (bit_length + 7) // 8
+
+
+def _parse_int_value(value: Optional[Any]) -> int:
+    if value is None:
+        return 0
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, (int, float)):
+        return int(value)
+    try:
+        text = str(value).strip()
+    except Exception as exc:  # pragma: no cover - defensive
+        raise ConfigurationError(f"Unsupported numeric value '{value}'.") from exc
+    if not text:
+        return 0
+    try:
+        return int(text, 0)
+    except ValueError as exc:
+        raise ConfigurationError(f"Value '{value}' is not a valid integer.") from exc
+
+
+def _clamp_integer(value: int, bits: int, signed: bool) -> int:
+    if bits <= 0:
+        raise ConfigurationError("Signal must occupy at least one bit.")
+    if signed:
+        min_value = -(1 << (bits - 1))
+        max_value = (1 << (bits - 1)) - 1
+    else:
+        min_value = 0
+        max_value = (1 << bits) - 1
+    if value < min_value or value > max_value:
+        raise ConfigurationError(
+            f"Value {value} exceeds bounds for a {'signed' if signed else 'unsigned'} {bits}-bit field."
+        )
+    if value < 0:
+        value = (1 << bits) + value
+    return value
+
+
+def _encode_signal_value(signal: SignalDefinition) -> int:
+    bits = signal.bit_length()
+    signal_type = (signal.signal_type or "").upper()
+    raw_value = signal.value
+
+    if signal_type == "BOOL":
+        truthy = str(raw_value).lower() in {"1", "true", "on", "yes"}
+        return 1 if truthy else 0
+    if signal_type in _SIGNED_SIGNAL_TYPES:
+        numeric = _parse_int_value(raw_value)
+        return _clamp_integer(numeric, bits, signed=True)
+    if signal_type in _UNSIGNED_SIGNAL_TYPES or signal_type in {
+        "TIME",
+        "DATE",
+        "TIME_OF_DAY",
+        "DATE_AND_TIME",
+        "BITSTRING",
+    }:
+        numeric = _parse_int_value(raw_value)
+        return _clamp_integer(numeric, bits, signed=False)
+    if signal_type in _FLOAT_SIGNAL_TYPES:
+        if raw_value is None:
+            value = 0.0
+        else:
+            try:
+                value = float(raw_value)
+            except (TypeError, ValueError) as exc:
+                raise ConfigurationError(
+                    f"Value '{raw_value}' is not a valid floating point number."
+                ) from exc
+        if signal_type == "REAL":
+            packed = struct.pack("<f", value)
+        else:
+            packed = struct.pack("<d", value)
+        return int.from_bytes(packed, "little")
+    if signal_type in {"STRING", "SHORT_STRING", "ARRAY", "STRUCT"}:
+        length_bytes = _total_bytes(bits)
+        text = "" if raw_value is None else str(raw_value)
+        data = text.encode("utf-8")
+        if len(data) > length_bytes:
+            data = data[:length_bytes]
+        else:
+            data = data.ljust(length_bytes, b"\x00")
+        return int.from_bytes(data, "little")
+
+    # Fallback for unknown types when a size is specified: treat as unsigned integer.
+    numeric = _parse_int_value(raw_value)
+    return _clamp_integer(numeric, bits, signed=False)
+
+
+def _write_bits(buffer: bytearray, offset: int, width: int, value: int) -> None:
+    for bit in range(width):
+        target_bit = offset + bit
+        byte_index = target_bit // 8
+        bit_index = target_bit % 8
+        bit_value = (value >> bit) & 1
+        if byte_index >= len(buffer):
+            raise ConfigurationError("Encoded payload exceeds assembly size.")
+        if bit_value:
+            buffer[byte_index] |= 1 << bit_index
+        else:
+            buffer[byte_index] &= ~(1 << bit_index)
+
+
+def build_assembly_payload(assembly: AssemblyDefinition) -> bytes:
+    """Construct a byte payload representing the assembly's current values."""
+
+    if assembly.size_bits <= 0:
+        return b""
+    payload = bytearray(math.ceil(assembly.size_bits / 8))
+    for signal in assembly.signals:
+        try:
+            encoded = _encode_signal_value(signal)
+        except ConfigurationError as exc:
+            raise ConfigurationError(
+                f"Signal '{signal.name}' in assembly '{assembly.name}' cannot be encoded: {exc}"
+            ) from exc
+        _write_bits(payload, signal.offset, signal.bit_length(), encoded)
+    return bytes(payload)
+
+
+def _read_bits(data: bytes, offset: int, width: int) -> int:
+    value = 0
+    for bit in range(width):
+        target_bit = offset + bit
+        byte_index = target_bit // 8
+        bit_index = target_bit % 8
+        if byte_index >= len(data):
+            continue
+        bit_value = (data[byte_index] >> bit_index) & 1
+        value |= bit_value << bit
+    return value
+
+
+def _decode_integer(value: int, bits: int, signed: bool) -> int:
+    if not signed:
+        return value
+    boundary = 1 << (bits - 1)
+    if value >= boundary:
+        return value - (1 << bits)
+    return value
+
+
+def parse_assembly_payload(
+    assembly: AssemblyDefinition, payload: bytes
+) -> Dict[str, Any]:
+    """Decode a payload into per-signal values."""
+
+    results: Dict[str, Any] = {}
+    for signal in assembly.signals:
+        bits = signal.bit_length()
+        raw = _read_bits(payload, signal.offset, bits)
+        signal_type = (signal.signal_type or "").upper()
+        if signal_type == "BOOL":
+            results[signal.name] = "1" if raw & 1 else "0"
+            continue
+        if signal_type in _SIGNED_SIGNAL_TYPES:
+            decoded = _decode_integer(raw, bits, signed=True)
+            results[signal.name] = str(decoded)
+            continue
+        if signal_type in _UNSIGNED_SIGNAL_TYPES or signal_type in {
+            "TIME",
+            "DATE",
+            "TIME_OF_DAY",
+            "DATE_AND_TIME",
+            "BITSTRING",
+        }:
+            results[signal.name] = str(raw)
+            continue
+        if signal_type in _FLOAT_SIGNAL_TYPES:
+            byte_length = _total_bytes(bits)
+            data = raw.to_bytes(byte_length, "little", signed=False)
+            if signal_type == "REAL":
+                decoded = struct.unpack("<f", data)[0]
+            else:
+                decoded = struct.unpack("<d", data)[0]
+            results[signal.name] = f"{decoded:g}"
+            continue
+        if signal_type in {"STRING", "SHORT_STRING", "ARRAY", "STRUCT"}:
+            byte_length = _total_bytes(bits)
+            data = raw.to_bytes(byte_length, "little", signed=False)
+            results[signal.name] = data.rstrip(b"\x00").decode("utf-8", errors="ignore")
+            continue
+        results[signal.name] = str(raw)
+    return results
 
