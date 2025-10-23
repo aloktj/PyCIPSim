@@ -151,6 +151,40 @@ class ConfigurationStore:
             self._persist()
             return signal
 
+    def update_assembly(
+        self,
+        name: str,
+        assembly_id: int,
+        *,
+        new_id: str,
+        direction: str,
+    ) -> AssemblyDefinition:
+        with self._lock:
+            configuration = self.get(name)
+            assembly = configuration.find_assembly(assembly_id)
+            try:
+                parsed_id = int(str(new_id), 0)
+            except (TypeError, ValueError) as exc:
+                raise ConfigurationError("Assembly ID must be an integer.") from exc
+            if parsed_id < 0:
+                raise ConfigurationError("Assembly ID cannot be negative.")
+            if parsed_id != assembly.assembly_id:
+                if any(item.assembly_id == parsed_id for item in configuration.assemblies):
+                    raise ConfigurationError(
+                        f"Assembly ID '{parsed_id}' already exists in configuration '{name}'."
+                    )
+            normalized_direction = (direction or "").strip().lower()
+            if normalized_direction in {"input", "in"}:
+                canonical_direction = "input"
+            elif normalized_direction in {"output", "out"}:
+                canonical_direction = "output"
+            else:
+                raise ConfigurationError("Assembly direction must be either 'input' or 'output'.")
+            assembly.assembly_id = parsed_id
+            assembly.direction = canonical_direction
+            self._persist()
+            return assembly
+
     def add_signal(
         self,
         name: str,

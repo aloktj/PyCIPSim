@@ -9,6 +9,7 @@ from pycipsim.config_store import (
     ConfigurationStore,
     SimulatorConfiguration,
 )
+from pycipsim.configuration import AssemblyDefinition
 
 
 def _sample_configuration(*, direction: str = "input") -> SimulatorConfiguration:
@@ -88,3 +89,51 @@ def test_remove_signal_persists(tmp_path: Path) -> None:
     updated = reloaded.get("DemoConfig")
     remaining = [signal.name for signal in updated.find_assembly(100).signals]
     assert remaining == ["SignalB"]
+
+
+def test_update_assembly_metadata(tmp_path: Path) -> None:
+    storage = tmp_path / "configs.json"
+    store = ConfigurationStore(storage_path=storage)
+    config = _sample_configuration(direction="output")
+    config.assemblies.append(
+        AssemblyDefinition(
+            assembly_id=200,
+            name="Second",
+            direction="input",
+            signals=[],
+        )
+    )
+    store.upsert(config)
+
+    updated = store.update_assembly(
+        "DemoConfig",
+        100,
+        new_id="300",
+        direction="input",
+    )
+
+    assert updated.assembly_id == 300
+    assert updated.direction == "input"
+
+    reloaded = ConfigurationStore(storage_path=storage)
+    refreshed = reloaded.get("DemoConfig")
+    assert refreshed.find_assembly(300).direction == "input"
+    assert refreshed.find_assembly(200).direction == "input"
+
+
+def test_update_assembly_rejects_duplicate_id(tmp_path: Path) -> None:
+    storage = tmp_path / "configs.json"
+    store = ConfigurationStore(storage_path=storage)
+    config = _sample_configuration(direction="output")
+    config.assemblies.append(
+        AssemblyDefinition(
+            assembly_id=150,
+            name="Other",
+            direction="output",
+            signals=[],
+        )
+    )
+    store.upsert(config)
+
+    with pytest.raises(ConfigurationError):
+        store.update_assembly("DemoConfig", 100, new_id="150", direction="output")

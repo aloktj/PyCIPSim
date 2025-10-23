@@ -114,6 +114,12 @@ def get_app(
                 current = None
         if current is None and configs:
             current = configs[0]
+        assembly_groups = {"output": [], "input": []}
+        if current:
+            for assembly in current.assemblies:
+                direction = (assembly.direction or "").lower()
+                key = "input" if direction in {"input", "in"} else "output"
+                assembly_groups[key].append(assembly)
         return templates.TemplateResponse(
             "index.html",
             {
@@ -121,6 +127,7 @@ def get_app(
                 "configs": configs,
                 "current": current,
                 "active": active,
+                "assembly_groups": assembly_groups,
                 "message": message,
                 "error": error,
             },
@@ -236,6 +243,30 @@ def get_app(
         except ConfigurationError as exc:
             return redirect("/", error=str(exc))
         return redirect("/", message=f"Signal '{signal_name}' updated.")
+
+    @app.post("/configs/{name}/assemblies/{assembly_id}/metadata")
+    async def update_assembly_metadata(
+        name: str,
+        assembly_id: int,
+        new_id: str = Form(...),
+        direction: str = Form(...),
+    ) -> RedirectResponse:
+        try:
+            manager.ensure_config_mutable(name)
+            assembly = store.update_assembly(
+                name,
+                assembly_id,
+                new_id=new_id,
+                direction=direction,
+            )
+        except RuntimeError as exc:
+            return redirect("/", error=str(exc))
+        except ConfigurationNotFoundError:
+            return redirect("/", error="Configuration not found")
+        except ConfigurationError as exc:
+            return redirect("/", error=str(exc))
+        message = f"Assembly '{assembly.name}' updated."
+        return redirect("/", message=message)
 
     @app.post("/configs/{name}/assemblies/{assembly_id}/signals/add")
     async def add_signal(
