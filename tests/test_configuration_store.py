@@ -70,6 +70,32 @@ def test_forward_open_metadata_generation() -> None:
     assert metadata["connection_points"] == [100, 200, 1]
 
 
+def test_forward_open_prefers_largest_directional_payloads() -> None:
+    config = SimulatorConfiguration.from_dict(
+        {
+            "name": "Runtime",
+            "target": {"ip": "10.0.0.10", "multicast": True},
+            "assemblies": [
+                {"id": 1, "name": "Config", "direction": "config", "size_bits": 16},
+                {"id": 10, "name": "Heartbeat", "direction": "input", "size_bits": 0},
+                {"id": 100, "name": "Inputs", "direction": "input", "size_bits": 1120},
+                {"id": 20, "name": "Diag", "direction": "output", "size_bits": 8},
+                {"id": 200, "name": "Outputs", "direction": "output", "size_bits": 1136},
+            ],
+        }
+    )
+
+    metadata = config.build_forward_open_metadata()
+    assert metadata is not None
+    assert metadata["t_to_o_instance"] == 100
+    assert metadata["o_to_t_instance"] == 200
+    assert metadata["connection_points"][:2] == [100, 200]
+    assert metadata["t_to_o_size"] == 148
+    assert metadata["o_to_t_size"] == 146
+    assert metadata["t_to_o_header_bytes"] == 8
+    assert metadata["o_to_t_header_bytes"] == 4
+
+
 def test_forward_open_header_overrides() -> None:
     config = SimulatorConfiguration.from_dict(
         {

@@ -399,6 +399,22 @@ class SimulatorConfiguration:
             }
             return mapping.get(text, text)
 
+        def _select_primary(assemblies: List[AssemblyDefinition]) -> Optional[AssemblyDefinition]:
+            """Pick the assembly that should anchor a connection direction."""
+
+            if not assemblies:
+                return None
+
+            non_zero = [a for a in assemblies if int(a.size_bits or 0) > 0]
+            if non_zero:
+                # Prefer the largest non-zero assembly so the forward-open
+                # mirrors the primary I/O payload exchanged during runtime.
+                return max(non_zero, key=lambda a: int(a.size_bits or 0))
+
+            # If every candidate reports zero bits fall back to the first
+            # declared assembly to preserve deterministic behaviour.
+            return assemblies[0]
+
         inputs = [
             assembly
             for assembly in self.assemblies
@@ -410,11 +426,11 @@ class SimulatorConfiguration:
             if _direction(assembly.direction) in {"output", "out"}
         ]
 
-        if not inputs or not outputs:
-            return None
+        input_assembly = _select_primary(inputs)
+        output_assembly = _select_primary(outputs)
 
-        input_assembly = inputs[0]
-        output_assembly = outputs[0]
+        if input_assembly is None or output_assembly is None:
+            return None
 
         config_candidates = [
             assembly
