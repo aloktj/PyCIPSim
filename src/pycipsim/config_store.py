@@ -181,7 +181,7 @@ class ConfigurationStore:
         *,
         new_id: str,
         direction: str,
-        size_bits: str,
+        size_bits: Optional[str] = None,
     ) -> AssemblyDefinition:
         with self._lock:
             configuration = self.get(name)
@@ -211,14 +211,19 @@ class ConfigurationStore:
                     raise ConfigurationError(
                         "Assembly direction must be either 'input' or 'output'."
                     )
-                try:
-                    parsed_size = int(size_bits)
-                except (TypeError, ValueError) as exc:
-                    raise ConfigurationError(
-                        "Assembly size (bits) must be an integer."
-                    ) from exc
-                if parsed_size < 0:
-                    raise ConfigurationError("Assembly size (bits) cannot be negative.")
+                if size_bits is None:
+                    parsed_size = assembly.size_bits
+                else:
+                    try:
+                        parsed_size = int(size_bits)
+                    except (TypeError, ValueError) as exc:
+                        raise ConfigurationError(
+                            "Assembly size (bits) must be an integer."
+                        ) from exc
+                    if parsed_size < 0:
+                        raise ConfigurationError(
+                            "Assembly size (bits) cannot be negative."
+                        )
                 assembly.assembly_id = parsed_id
                 assembly.direction = canonical_direction
                 assembly.size_bits = parsed_size
@@ -381,165 +386,6 @@ class ConfigurationStore:
             except Exception:
                 assembly.signals = original_signals
                 raise
-            self._persist()
-
-    def update_assembly(
-        self,
-        name: str,
-        assembly_id: int,
-        *,
-        new_id: str,
-        direction: str,
-    ) -> AssemblyDefinition:
-        with self._lock:
-            configuration = self.get(name)
-            assembly = configuration.find_assembly(assembly_id)
-            try:
-                parsed_id = int(str(new_id), 0)
-            except (TypeError, ValueError) as exc:
-                raise ConfigurationError("Assembly ID must be an integer.") from exc
-            if parsed_id < 0:
-                raise ConfigurationError("Assembly ID cannot be negative.")
-            if parsed_id != assembly.assembly_id:
-                if any(item.assembly_id == parsed_id for item in configuration.assemblies):
-                    raise ConfigurationError(
-                        f"Assembly ID '{parsed_id}' already exists in configuration '{name}'."
-                    )
-            normalized_direction = (direction or "").strip().lower()
-            if normalized_direction in {"input", "in"}:
-                canonical_direction = "input"
-            elif normalized_direction in {"output", "out"}:
-                canonical_direction = "output"
-            else:
-                raise ConfigurationError("Assembly direction must be either 'input' or 'output'.")
-            assembly.assembly_id = parsed_id
-            assembly.direction = canonical_direction
-            self._persist()
-            return assembly
-
-    def add_assembly(
-        self,
-        name: str,
-        *,
-        assembly_id: str,
-        assembly_name: str,
-        direction: str,
-        position: str = "end",
-        relative_assembly: Optional[str] = None,
-    ) -> AssemblyDefinition:
-        """Insert a new assembly into the configuration."""
-
-        with self._lock:
-            configuration = self.get(name)
-            if not assembly_name:
-                raise ConfigurationError("Assembly name cannot be empty.")
-            try:
-                parsed_id = int(str(assembly_id), 0)
-            except (TypeError, ValueError) as exc:
-                raise ConfigurationError("Assembly ID must be an integer.") from exc
-            if parsed_id < 0:
-                raise ConfigurationError("Assembly ID cannot be negative.")
-            if any(item.assembly_id == parsed_id for item in configuration.assemblies):
-                raise ConfigurationError(
-                    f"Assembly ID '{parsed_id}' already exists in configuration '{name}'."
-                )
-            if any(item.name == assembly_name for item in configuration.assemblies):
-                raise ConfigurationError(
-                    f"Assembly name '{assembly_name}' already exists in configuration '{name}'."
-                )
-            normalized_direction = (direction or "").strip().lower()
-            if normalized_direction in {"input", "in"}:
-                canonical_direction = "input"
-            elif normalized_direction in {"output", "out"}:
-                canonical_direction = "output"
-            else:
-                raise ConfigurationError("Assembly direction must be either 'input' or 'output'.")
-
-            new_assembly = AssemblyDefinition(
-                assembly_id=parsed_id,
-                name=assembly_name,
-                direction=canonical_direction,
-                signals=[],
-            )
-
-            insert_index = len(configuration.assemblies)
-            normalized_position = (position or "end").strip().lower()
-            if normalized_position in {"before", "after"} and relative_assembly:
-                try:
-                    relative_id = int(str(relative_assembly), 0)
-                except (TypeError, ValueError) as exc:
-                    raise ConfigurationError("Relative assembly ID must be an integer.") from exc
-                relative_index = configuration.find_assembly_index(relative_id)
-                insert_index = relative_index
-                if normalized_position == "after":
-                    insert_index += 1
-            elif normalized_position == "start":
-                insert_index = 0
-
-            configuration.assemblies.insert(insert_index, new_assembly)
-            self._persist()
-            return new_assembly
-
-    def remove_assembly(self, name: str, assembly_id: int) -> None:
-        """Remove an assembly from the configuration."""
-
-        with self._lock:
-            configuration = self.get(name)
-            index = configuration.find_assembly_index(assembly_id)
-            configuration.assemblies.pop(index)
-            self._persist()
-
-    def add_signal(
-        self,
-        name: str,
-        assembly_id: int,
-        *,
-        new_name: str,
-        offset: str,
-        signal_type: str,
-        position: str,
-        relative_signal: Optional[str],
-    ) -> SignalDefinition:
-        with self._lock:
-            configuration = self.get(name)
-            assembly = configuration.find_assembly(assembly_id)
-            if not new_name:
-                raise ConfigurationError("Signal name cannot be empty.")
-            if any(existing.name == new_name for existing in assembly.signals):
-                raise ConfigurationError(
-                    f"Signal name '{new_name}' already exists in assembly {assembly_id}."
-                )
-            try:
-                offset_value = int(offset)
-            except (TypeError, ValueError) as exc:
-                raise ConfigurationError("Signal offset must be an integer.") from exc
-            if offset_value < 0:
-                raise ConfigurationError("Signal offset cannot be negative.")
-            normalized_type = validate_signal_type(signal_type)
-            new_signal = SignalDefinition(
-                name=new_name,
-                offset=offset_value,
-                signal_type=normalized_type,
-            )
-            insert_index = len(assembly.signals)
-            if relative_signal:
-                relative_index = assembly.find_signal_index(relative_signal)
-                if position == "before":
-                    insert_index = relative_index
-                else:
-                    insert_index = relative_index + 1
-            assembly.signals.insert(insert_index, new_signal)
-            self._persist()
-            return new_signal
-
-    def remove_signal(self, name: str, assembly_id: int, signal_name: str) -> None:
-        """Remove a signal from the given assembly."""
-
-        with self._lock:
-            configuration = self.get(name)
-            assembly = configuration.find_assembly(assembly_id)
-            index = assembly.find_signal_index(signal_name)
-            assembly.signals.pop(index)
             self._persist()
 
     # ------------------------------------------------------------------

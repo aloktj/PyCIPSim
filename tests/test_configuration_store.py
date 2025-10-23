@@ -147,6 +147,27 @@ def test_update_assembly_metadata(tmp_path: Path) -> None:
     assert refreshed.find_assembly(200).direction == "input"
 
 
+def test_update_assembly_metadata_without_size(tmp_path: Path) -> None:
+    storage = tmp_path / "configs.json"
+    store = ConfigurationStore(storage_path=storage)
+    config = _sample_configuration(direction="output")
+    config.assemblies[0].size_bits = 96
+    store.upsert(config)
+
+    updated = store.update_assembly(
+        "DemoConfig",
+        100,
+        new_id="321",
+        direction="input",
+    )
+
+    assert updated.size_bits == 96
+
+    reloaded = ConfigurationStore(storage_path=storage)
+    refreshed = reloaded.get("DemoConfig")
+    assert refreshed.find_assembly(321).size_bits == 96
+
+
 def test_update_assembly_rejects_duplicate_id(tmp_path: Path) -> None:
     storage = tmp_path / "configs.json"
     store = ConfigurationStore(storage_path=storage)
