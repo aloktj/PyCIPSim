@@ -196,3 +196,60 @@ def test_index_groups_assemblies_by_direction(store: ConfigurationStore) -> None
     assert "Assembly SecondOutput (#210)" in output_section
     input_section = html.split("Input Assemblies", 1)[1]
     assert "Assembly InputOne (#310)" in input_section
+
+
+def test_add_and_remove_assembly_via_web(store: ConfigurationStore) -> None:
+    manager = SimulatorManager()
+    config = SimulatorConfiguration.from_dict(_scenario_payload())
+    store.upsert(config)
+    app = get_app(store=store, manager=manager)
+    client = TestClient(app)
+
+    response = client.post(
+        "/configs/WebConfig/assemblies/add",
+        data={
+            "assembly_id": "300",
+            "assembly_name": "Extra",
+            "direction": "input",
+            "position": "after",
+            "relative_assembly": "200",
+        },
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+
+    added = store.get("WebConfig").find_assembly(300)
+    assert added.direction == "input"
+
+    remove_response = client.post(
+        "/configs/WebConfig/assemblies/300/delete",
+        follow_redirects=False,
+    )
+    assert remove_response.status_code == 303
+
+    refreshed = store.get("WebConfig")
+    assert all(assembly.assembly_id != 300 for assembly in refreshed.assemblies)
+
+
+def test_add_assembly_blocked_when_running(store: ConfigurationStore) -> None:
+    manager = SimulatorManager()
+    config = SimulatorConfiguration.from_dict(_scenario_payload())
+    store.upsert(config)
+    manager.start(config)
+    app = get_app(store=store, manager=manager)
+    client = TestClient(app)
+
+    response = client.post(
+        "/configs/WebConfig/assemblies/add",
+        data={
+            "assembly_id": "300",
+            "assembly_name": "Blocked",
+            "direction": "output",
+        },
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    assert "error=" in response.headers["location"]
+    refreshed = store.get("WebConfig")
+    assert all(assembly.assembly_id != 300 for assembly in refreshed.assemblies)

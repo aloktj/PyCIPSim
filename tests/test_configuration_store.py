@@ -137,3 +137,72 @@ def test_update_assembly_rejects_duplicate_id(tmp_path: Path) -> None:
 
     with pytest.raises(ConfigurationError):
         store.update_assembly("DemoConfig", 100, new_id="150", direction="output")
+
+
+def test_add_assembly_with_relative_position(tmp_path: Path) -> None:
+    storage = tmp_path / "configs.json"
+    store = ConfigurationStore(storage_path=storage)
+    config = _sample_configuration(direction="output")
+    config.assemblies.append(
+        AssemblyDefinition(
+            assembly_id=200,
+            name="Second",
+            direction="output",
+            signals=[],
+        )
+    )
+    store.upsert(config)
+
+    store.add_assembly(
+        "DemoConfig",
+        assembly_id="0x201",
+        assembly_name="Inserted",
+        direction="In",
+        position="before",
+        relative_assembly="200",
+    )
+
+    updated = store.get("DemoConfig")
+    ids = [assembly.assembly_id for assembly in updated.assemblies]
+    assert ids == [100, 0x201, 200]
+    inserted = updated.find_assembly(0x201)
+    assert inserted.direction == "input"
+
+
+def test_add_and_remove_assembly_validations(tmp_path: Path) -> None:
+    storage = tmp_path / "configs.json"
+    store = ConfigurationStore(storage_path=storage)
+    config = _sample_configuration(direction="output")
+    store.upsert(config)
+
+    with pytest.raises(ConfigurationError):
+        store.add_assembly(
+            "DemoConfig",
+            assembly_id="100",
+            assembly_name="DuplicateId",
+            direction="output",
+        )
+
+    with pytest.raises(ConfigurationError):
+        store.add_assembly(
+            "DemoConfig",
+            assembly_id="300",
+            assembly_name="Input",
+            direction="output",
+        )
+
+    store.add_assembly(
+        "DemoConfig",
+        assembly_id="300",
+        assembly_name="NewAssembly",
+        direction="output",
+        position="start",
+    )
+
+    updated = store.get("DemoConfig")
+    ids = [assembly.assembly_id for assembly in updated.assemblies]
+    assert ids[0] == 300
+
+    store.remove_assembly("DemoConfig", 300)
+    refreshed = store.get("DemoConfig")
+    assert all(assembly.assembly_id != 300 for assembly in refreshed.assemblies)

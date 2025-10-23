@@ -268,6 +268,46 @@ def get_app(
         message = f"Assembly '{assembly.name}' updated."
         return redirect("/", message=message)
 
+    @app.post("/configs/{name}/assemblies/add")
+    async def add_assembly(
+        name: str,
+        assembly_id: str = Form(...),
+        assembly_name: str = Form(...),
+        direction: str = Form(...),
+        position: str = Form("end"),
+        relative_assembly: Optional[str] = Form(None),
+    ) -> RedirectResponse:
+        try:
+            manager.ensure_config_mutable(name)
+            store.add_assembly(
+                name,
+                assembly_id=assembly_id,
+                assembly_name=assembly_name,
+                direction=direction,
+                position=position,
+                relative_assembly=relative_assembly or None,
+            )
+        except RuntimeError as exc:
+            return redirect("/", error=str(exc))
+        except ConfigurationNotFoundError:
+            return redirect("/", error="Configuration not found")
+        except ConfigurationError as exc:
+            return redirect("/", error=str(exc))
+        return redirect("/", message=f"Assembly '{assembly_name}' added.")
+
+    @app.post("/configs/{name}/assemblies/{assembly_id}/delete")
+    async def remove_assembly(name: str, assembly_id: int) -> RedirectResponse:
+        try:
+            manager.ensure_config_mutable(name)
+            store.remove_assembly(name, assembly_id)
+        except RuntimeError as exc:
+            return redirect("/", error=str(exc))
+        except ConfigurationNotFoundError:
+            return redirect("/", error="Configuration not found")
+        except ConfigurationError as exc:
+            return redirect("/", error=str(exc))
+        return redirect("/", message=f"Assembly '{assembly_id}' removed.")
+
     @app.post("/configs/{name}/assemblies/{assembly_id}/signals/add")
     async def add_signal(
         name: str,

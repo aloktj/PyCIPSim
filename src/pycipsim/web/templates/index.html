@@ -71,11 +71,19 @@
       .assembly-card { margin-bottom: 1.5rem; }
       .assembly-header { display: flex; align-items: center; justify-content: space-between; gap: 1rem; flex-wrap: wrap; }
       .assembly-header h4 { margin: 0; }
+      .assembly-group-header { display: flex; align-items: center; justify-content: space-between; gap: 1rem; flex-wrap: wrap; }
+      .assembly-controls { display: flex; gap: 0.75rem; align-items: flex-end; flex-wrap: wrap; }
+      .assembly-actions { display: flex; align-items: center; gap: 0.5rem; }
       .assembly-metadata-form { display: flex; gap: 0.75rem; align-items: flex-end; flex-wrap: wrap; }
       .assembly-metadata-form label { display: flex; flex-direction: column; font-size: 0.9rem; }
       .assembly-metadata-form input[type="text"],
       .assembly-metadata-form select { width: 8rem; }
       .assembly-metadata-form button { height: 2.2rem; }
+      details.add-assembly { display: inline-block; }
+      details.add-assembly form { margin-top: 0.75rem; display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: flex-end; }
+      details.add-assembly label { display: flex; flex-direction: column; font-size: 0.9rem; }
+      details.add-assembly input[type="text"],
+      details.add-assembly select { width: 10rem; }
     </style>
   </head>
   <body>
@@ -176,17 +184,45 @@
           {% endif %}
 
           {% set direction_order = ['output', 'input'] %}
-          {% if current.assemblies %}
-            {% for direction_key in direction_order %}
-              {% set assemblies = assembly_groups.get(direction_key, []) %}
+          {% for direction_key in direction_order %}
+            {% set assemblies = assembly_groups.get(direction_key, []) %}
+            <section class="assembly-group">
+              <div class="assembly-group-header">
+                <h3>{{ 'Output Assemblies' if direction_key == 'output' else 'Input Assemblies' }}</h3>
+                {% if not is_running %}
+                  <details class="add-assembly">
+                    <summary class="icon-button add-summary" title="Add assembly">+</summary>
+                    <form method="post" action="/configs/{{ current.name }}/assemblies/add">
+                      {% if assemblies %}
+                        <input type="hidden" name="position" value="after" />
+                        <input type="hidden" name="relative_assembly" value="{{ (assemblies|last).assembly_id }}" />
+                      {% else %}
+                        <input type="hidden" name="position" value="end" />
+                      {% endif %}
+                      <label>Name
+                        <input type="text" name="assembly_name" required />
+                      </label>
+                      <label>Assembly ID
+                        <input type="text" name="assembly_id" required />
+                      </label>
+                      <label>Direction
+                        <select name="direction">
+                          <option value="output" {% if direction_key == 'output' %}selected{% endif %}>Output</option>
+                          <option value="input" {% if direction_key == 'input' %}selected{% endif %}>Input</option>
+                        </select>
+                      </label>
+                      <button type="submit">Add Assembly</button>
+                    </form>
+                  </details>
+                {% endif %}
+              </div>
               {% if assemblies %}
-                <section class="assembly-group">
-                  <h3>{{ 'Output Assemblies' if direction_key == 'output' else 'Input Assemblies' }}</h3>
-                  {% for assembly in assemblies %}
-                    {% set is_input_assembly = assembly.direction and assembly.direction|lower in ['input', 'in'] %}
-                    <article class="assembly-card">
-                      <div class="assembly-header">
-                        <h4>Assembly {{ assembly.name }} (#{{ assembly.assembly_id }})</h4>
+                {% for assembly in assemblies %}
+                  {% set is_input_assembly = assembly.direction and assembly.direction|lower in ['input', 'in'] %}
+                  <article class="assembly-card">
+                    <div class="assembly-header">
+                      <h4>Assembly {{ assembly.name }} (#{{ assembly.assembly_id }})</h4>
+                      <div class="assembly-controls">
                         <form
                           method="post"
                           action="/configs/{{ current.name }}/assemblies/{{ assembly.assembly_id }}/metadata"
@@ -204,143 +240,174 @@
                           </label>
                           <button type="submit" {% if is_running %}disabled{% endif %}>Save Assembly</button>
                         </form>
-                      </div>
-                      {% if is_running %}
-                        <p class="disabled-note">Assembly metadata is locked while the simulator is running.</p>
-                      {% endif %}
-                      {% if not is_running %}
-                        <details class="add-signal">
-                          <summary class="icon-button add-summary" title="Add signal at start">+</summary>
-                          <form method="post" action="/configs/{{ current.name }}/assemblies/{{ assembly.assembly_id }}/signals/add">
-                            <input type="hidden" name="position" value="before" />
-                            <input type="hidden" name="relative_signal" value="{{ assembly.signals[0].name if assembly.signals else '' }}" />
-                            <label>Signal Name
-                              <input type="text" name="new_name" required />
-                            </label>
-                            <label>Offset
-                              <input type="number" name="offset" required />
-                            </label>
-                            <label>Type
-                              <input type="text" name="signal_type" required />
-                            </label>
-                            <button type="submit">Add Signal</button>
-                          </form>
-                        </details>
-                      {% endif %}
-                      {% if not is_running %}
-                        <div class="sr-only" aria-hidden="true">
-                          {% for signal in assembly.signals %}
-                            {% set form_id = "signal-details-" ~ assembly.assembly_id ~ "-" ~ loop.index0 %}
+                        {% if not is_running %}
+                          <div class="assembly-actions">
+                            <details class="add-assembly">
+                              <summary class="icon-button add-summary" title="Add assembly after">+</summary>
+                              <form method="post" action="/configs/{{ current.name }}/assemblies/add">
+                                <input type="hidden" name="position" value="after" />
+                                <input type="hidden" name="relative_assembly" value="{{ assembly.assembly_id }}" />
+                                <label>Name
+                                  <input type="text" name="assembly_name" required />
+                                </label>
+                                <label>Assembly ID
+                                  <input type="text" name="assembly_id" required />
+                                </label>
+                                <label>Direction
+                                  <select name="direction">
+                                    <option value="output" {% if direction_key == 'output' %}selected{% endif %}>Output</option>
+                                    <option value="input" {% if direction_key == 'input' %}selected{% endif %}>Input</option>
+                                  </select>
+                                </label>
+                                <button type="submit">Add Assembly</button>
+                              </form>
+                            </details>
                             <form
-                              id="{{ form_id }}"
                               method="post"
-                              action="/configs/{{ current.name }}/assemblies/{{ assembly.assembly_id }}/signals/{{ signal.name }}/details"
-                            ></form>
-                          {% endfor %}
-                        </div>
-                      {% endif %}
-                      <table>
-                        <thead>
+                              action="/configs/{{ current.name }}/assemblies/{{ assembly.assembly_id }}/delete"
+                              class="inline"
+                            >
+                              <button type="submit" class="icon-button remove-button" title="Remove assembly">&minus;</button>
+                            </form>
+                          </div>
+                        {% endif %}
+                      </div>
+                    </div>
+                    {% if is_running %}
+                      <p class="disabled-note">Assembly metadata is locked while the simulator is running.</p>
+                    {% endif %}
+                    {% if not is_running %}
+                      <details class="add-signal">
+                        <summary class="icon-button add-summary" title="Add signal at start">+</summary>
+                        <form method="post" action="/configs/{{ current.name }}/assemblies/{{ assembly.assembly_id }}/signals/add">
+                          <input type="hidden" name="position" value="before" />
+                          <input type="hidden" name="relative_signal" value="{{ assembly.signals[0].name if assembly.signals else '' }}" />
+                          <label>Signal Name
+                            <input type="text" name="new_name" required />
+                          </label>
+                          <label>Offset
+                            <input type="number" name="offset" required />
+                          </label>
+                          <label>Type
+                            <input type="text" name="signal_type" required />
+                          </label>
+                          <button type="submit">Add Signal</button>
+                        </form>
+                      </details>
+                    {% endif %}
+                    {% if not is_running %}
+                      <div class="sr-only" aria-hidden="true">
+                        {% for signal in assembly.signals %}
+                          {% set form_id = "signal-details-" ~ assembly.assembly_id ~ "-" ~ loop.index0 %}
+                          <form
+                            id="{{ form_id }}"
+                            method="post"
+                            action="/configs/{{ current.name }}/assemblies/{{ assembly.assembly_id }}/signals/{{ signal.name }}/details"
+                          ></form>
+                        {% endfor %}
+                      </div>
+                    {% endif %}
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>Offset</th>
+                          <th>Signal</th>
+                          <th>Type</th>
+                          <th>Value</th>
+                          <th class="insert-cell">Insert</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {% for signal in assembly.signals %}
+                          {% set form_id = "signal-details-" ~ assembly.assembly_id ~ "-" ~ loop.index0 %}
                           <tr>
-                            <th>Offset</th>
-                            <th>Signal</th>
-                            <th>Type</th>
-                            <th>Value</th>
-                            <th class="insert-cell">Insert</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {% for signal in assembly.signals %}
-                            {% set form_id = "signal-details-" ~ assembly.assembly_id ~ "-" ~ loop.index0 %}
-                            <tr>
-                              <td>
-                                {% if is_running %}
-                                  {{ signal.offset }}
-                                {% else %}
-                                  <input form="{{ form_id }}" type="number" name="offset" value="{{ signal.offset }}" required />
-                                {% endif %}
-                              </td>
-                              <td>
-                                {% if is_running %}
-                                  {{ signal.name }}
-                                {% else %}
-                                  <input form="{{ form_id }}" type="text" name="new_name" value="{{ signal.name }}" required />
-                                {% endif %}
-                              </td>
-                              <td>
-                                {% if is_running %}
-                                  {{ signal.signal_type }}
-                                {% else %}
-                                  <input form="{{ form_id }}" type="text" name="signal_type" value="{{ signal.signal_type }}" required />
-                                  <button form="{{ form_id }}" type="submit">Save</button>
-                                {% endif %}
-                              </td>
-                              <td class="signal-actions">
-                                {% if is_input_assembly %}
-                                  <input
-                                    type="text"
-                                    value="{{ signal.value if signal.value is not none else 0 }}"
-                                    readonly
-                                    disabled
-                                  />
-                                {% else %}
-                                  <form method="post" action="/configs/{{ current.name }}/assemblies/{{ assembly.assembly_id }}/signals/{{ signal.name }}/value">
-                                    <input type="text" name="value" value="{{ signal.value or '' }}" />
-                                    <button type="submit" name="action" value="set">Set</button>
-                                    <button type="submit" name="action" value="clear">Clear</button>
-                                  </form>
-                                {% endif %}
-                              </td>
-                              <td class="insert-cell">
-                                {% if not is_running %}
-                                  <div class="row-actions">
-                                    <details class="add-signal">
-                                      <summary class="icon-button add-summary" title="Add signal after">+</summary>
-                                      <form method="post" action="/configs/{{ current.name }}/assemblies/{{ assembly.assembly_id }}/signals/add">
-                                        <input type="hidden" name="position" value="after" />
-                                        <input type="hidden" name="relative_signal" value="{{ signal.name }}" />
-                                        <label>Signal Name
-                                          <input type="text" name="new_name" required />
-                                        </label>
-                                        <label>Offset
-                                          <input type="number" name="offset" required />
-                                        </label>
-                                        <label>Type
-                                          <input type="text" name="signal_type" required />
-                                        </label>
-                                        <button type="submit">Add Signal</button>
-                                      </form>
-                                    </details>
-                                    <form
-                                      method="post"
-                                      action="/configs/{{ current.name }}/assemblies/{{ assembly.assembly_id }}/signals/{{ signal.name }}/delete"
-                                      class="inline"
-                                    >
-                                      <button type="submit" class="icon-button remove-button" title="Remove signal">&minus;</button>
+                            <td>
+                              {% if is_running %}
+                                {{ signal.offset }}
+                              {% else %}
+                                <input form="{{ form_id }}" type="number" name="offset" value="{{ signal.offset }}" required />
+                              {% endif %}
+                            </td>
+                            <td>
+                              {% if is_running %}
+                                {{ signal.name }}
+                              {% else %}
+                                <input form="{{ form_id }}" type="text" name="new_name" value="{{ signal.name }}" required />
+                              {% endif %}
+                            </td>
+                            <td>
+                              {% if is_running %}
+                                {{ signal.signal_type }}
+                              {% else %}
+                                <input form="{{ form_id }}" type="text" name="signal_type" value="{{ signal.signal_type }}" required />
+                                <button form="{{ form_id }}" type="submit">Save</button>
+                              {% endif %}
+                            </td>
+                            <td class="signal-actions">
+                              {% if is_input_assembly %}
+                                <input
+                                  type="text"
+                                  value="{{ signal.value if signal.value is not none else 0 }}"
+                                  readonly
+                                  disabled
+                                />
+                              {% else %}
+                                <form method="post" action="/configs/{{ current.name }}/assemblies/{{ assembly.assembly_id }}/signals/{{ signal.name }}/value">
+                                  <input type="text" name="value" value="{{ signal.value or '' }}" />
+                                  <button type="submit" name="action" value="set">Set</button>
+                                  <button type="submit" name="action" value="clear">Clear</button>
+                                </form>
+                              {% endif %}
+                            </td>
+                            <td class="insert-cell">
+                              {% if not is_running %}
+                                <div class="row-actions">
+                                  <details class="add-signal">
+                                    <summary class="icon-button add-summary" title="Add signal after">+</summary>
+                                    <form method="post" action="/configs/{{ current.name }}/assemblies/{{ assembly.assembly_id }}/signals/add">
+                                      <input type="hidden" name="position" value="after" />
+                                      <input type="hidden" name="relative_signal" value="{{ signal.name }}" />
+                                      <label>Signal Name
+                                        <input type="text" name="new_name" required />
+                                      </label>
+                                      <label>Offset
+                                        <input type="number" name="offset" required />
+                                      </label>
+                                      <label>Type
+                                        <input type="text" name="signal_type" required />
+                                      </label>
+                                      <button type="submit">Add Signal</button>
                                     </form>
-                                  </div>
-                                {% endif %}
-                              </td>
-                            </tr>
-                          {% endfor %}
-                          {% if not assembly.signals %}
-                            <tr>
-                              <td colspan="5">No signals defined.</td>
-                            </tr>
-                          {% endif %}
-                        </tbody>
-                      </table>
-                      {% if is_running %}
-                        <p class="disabled-note">Signal attributes are locked while the simulator is running. Use the value controls to update live data.</p>
-                      {% endif %}
-                    </article>
-                  {% endfor %}
-                </section>
+                                  </details>
+                                  <form
+                                    method="post"
+                                    action="/configs/{{ current.name }}/assemblies/{{ assembly.assembly_id }}/signals/{{ signal.name }}/delete"
+                                    class="inline"
+                                  >
+                                    <button type="submit" class="icon-button remove-button" title="Remove signal">&minus;</button>
+                                  </form>
+                                </div>
+                              {% endif %}
+                            </td>
+                          </tr>
+                        {% endfor %}
+                        {% if not assembly.signals %}
+                          <tr>
+                            <td colspan="5">No signals defined.</td>
+                          </tr>
+                        {% endif %}
+                      </tbody>
+                    </table>
+                    {% if is_running %}
+                      <p class="disabled-note">Signal attributes are locked while the simulator is running. Use the value controls to update live data.</p>
+                    {% endif %}
+                  </article>
+                {% endfor %}
+              {% else %}
+                <p>No {{ 'output' if direction_key == 'output' else 'input' }} assemblies defined.</p>
               {% endif %}
-            {% endfor %}
-          {% else %}
-            <p>No assemblies defined.</p>
-          {% endif %}
+            </section>
+          {% endfor %}
         {% else %}
           <p>Select or upload a configuration to begin.</p>
         {% endif %}

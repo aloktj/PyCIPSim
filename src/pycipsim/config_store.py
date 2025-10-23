@@ -185,6 +185,78 @@ class ConfigurationStore:
             self._persist()
             return assembly
 
+    def add_assembly(
+        self,
+        name: str,
+        *,
+        assembly_id: str,
+        assembly_name: str,
+        direction: str,
+        position: str = "end",
+        relative_assembly: Optional[str] = None,
+    ) -> AssemblyDefinition:
+        """Insert a new assembly into the configuration."""
+
+        with self._lock:
+            configuration = self.get(name)
+            if not assembly_name:
+                raise ConfigurationError("Assembly name cannot be empty.")
+            try:
+                parsed_id = int(str(assembly_id), 0)
+            except (TypeError, ValueError) as exc:
+                raise ConfigurationError("Assembly ID must be an integer.") from exc
+            if parsed_id < 0:
+                raise ConfigurationError("Assembly ID cannot be negative.")
+            if any(item.assembly_id == parsed_id for item in configuration.assemblies):
+                raise ConfigurationError(
+                    f"Assembly ID '{parsed_id}' already exists in configuration '{name}'."
+                )
+            if any(item.name == assembly_name for item in configuration.assemblies):
+                raise ConfigurationError(
+                    f"Assembly name '{assembly_name}' already exists in configuration '{name}'."
+                )
+            normalized_direction = (direction or "").strip().lower()
+            if normalized_direction in {"input", "in"}:
+                canonical_direction = "input"
+            elif normalized_direction in {"output", "out"}:
+                canonical_direction = "output"
+            else:
+                raise ConfigurationError("Assembly direction must be either 'input' or 'output'.")
+
+            new_assembly = AssemblyDefinition(
+                assembly_id=parsed_id,
+                name=assembly_name,
+                direction=canonical_direction,
+                signals=[],
+            )
+
+            insert_index = len(configuration.assemblies)
+            normalized_position = (position or "end").strip().lower()
+            if normalized_position in {"before", "after"} and relative_assembly:
+                try:
+                    relative_id = int(str(relative_assembly), 0)
+                except (TypeError, ValueError) as exc:
+                    raise ConfigurationError("Relative assembly ID must be an integer.") from exc
+                relative_index = configuration.find_assembly_index(relative_id)
+                insert_index = relative_index
+                if normalized_position == "after":
+                    insert_index += 1
+            elif normalized_position == "start":
+                insert_index = 0
+
+            configuration.assemblies.insert(insert_index, new_assembly)
+            self._persist()
+            return new_assembly
+
+    def remove_assembly(self, name: str, assembly_id: int) -> None:
+        """Remove an assembly from the configuration."""
+
+        with self._lock:
+            configuration = self.get(name)
+            index = configuration.find_assembly_index(assembly_id)
+            configuration.assemblies.pop(index)
+            self._persist()
+
     def add_signal(
         self,
         name: str,
