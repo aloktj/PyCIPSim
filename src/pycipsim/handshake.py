@@ -7,7 +7,7 @@ import socket
 import time
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Callable, Dict, Iterable, List, Optional, Protocol
+from typing import Any, Callable, Dict, Iterable, List, Optional, Protocol, Tuple
 
 from .session import SessionConfig
 
@@ -74,8 +74,11 @@ def _resolve_driver(config: SessionConfig) -> HandshakeDriver:
         ) from exc
 
     _CONNECTION_TYPE_BASE = {
-        "point_to_point": 0b_0100_0010_0000_0000,
-        "multicast": 0b_0100_0011_0000_0000,
+        # Bits 13-14 encode the connection type while the low 10 bits capture the
+        # size. The high nibble in the expected parameters (0x4892/0x2894) maps to
+        # these base masks.
+        "point_to_point": 0x4800,
+        "multicast": 0x2800,
     }
 
     def _normalize_int(value: Any, *, field: str, default: Optional[int] = None, minimum: Optional[int] = None, maximum: Optional[int] = None) -> int:
@@ -115,7 +118,7 @@ def _resolve_driver(config: SessionConfig) -> HandshakeDriver:
             return UDINT.encode((size & 0xFFFF) | (base << 16))
         return UINT.encode((size & 0x01FF) | base)
 
-    def _build_forward_open_request(metadata: Dict[str, Any]) -> tuple[bytes, bytes]:
+    def _build_forward_open_request(metadata: Dict[str, Any]) -> Tuple[bytes, Any, Dict[str, int]]:
         if not metadata:
             raise RuntimeError("Forward-open metadata is required for live handshakes.")
 
@@ -150,7 +153,7 @@ def _resolve_driver(config: SessionConfig) -> HandshakeDriver:
             metadata.get("t_to_o_rpi_us", 200_000), field="t_to_o_rpi_us", minimum=1, maximum=0xFFFF_FFFF
         )
         timeout_multiplier = _normalize_int(
-            metadata.get("timeout_multiplier", TIMEOUT_MULTIPLIER[0]),
+            metadata.get("timeout_multiplier", 0),
             field="timeout_multiplier",
             minimum=0,
             maximum=0xFF,
@@ -163,9 +166,9 @@ def _resolve_driver(config: SessionConfig) -> HandshakeDriver:
         )
 
         o_to_t_conn_id = _normalize_int(
-            metadata.get("o_to_t_connection_id", secrets.randbits(32) or 1),
+            metadata.get("o_to_t_connection_id", 0),
             field="o_to_t_connection_id",
-            minimum=1,
+            minimum=0,
             maximum=0xFFFF_FFFF,
         )
         t_to_o_conn_id = _normalize_int(
@@ -259,7 +262,16 @@ def _resolve_driver(config: SessionConfig) -> HandshakeDriver:
                 path_bytes,
             ]
         )
-        return message, service
+        return (
+            message,
+            service,
+            {
+                "connection_serial": connection_serial,
+                "vendor_id": vendor_id,
+                "originator_serial": originator_serial,
+                "t_to_o_conn_id": t_to_o_conn_id,
+            },
+        )
 
     address = config.ip_address
     if config.slot is not None:
@@ -308,7 +320,12 @@ def _resolve_driver(config: SessionConfig) -> HandshakeDriver:
                     raise RuntimeError("Failed to perform CIP forward open")
                 return
 
-            request_data, service = _build_forward_open_request(self._forward_open_meta)
+            request_data, service, state = _build_forward_open_request(self._forward_open_meta)
+            cfg = self._driver._cfg  # type: ignore[attr-defined]
+            cfg["csn"] = UINT.encode(state["connection_serial"])
+            cfg["vid"] = UINT.encode(state["vendor_id"])
+            cfg["vsn"] = UDINT.encode(state["originator_serial"])
+            cfg["cid"] = UDINT.encode(state["t_to_o_conn_id"])
             route_path = DRIVER_PADDED_EPATH.encode(
                 self._driver._cfg["cip_path"] + MSG_ROUTER_PATH, length=True
             )

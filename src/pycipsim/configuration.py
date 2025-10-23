@@ -417,20 +417,16 @@ class SimulatorConfiguration:
 
         application_instance = overrides.get("application_instance")
         if application_instance is None:
-            if configuration is not None:
-                application_instance = configuration.assembly_id
-            else:
-                application_instance = output_assembly.assembly_id
+            application_instance = 0x01
+
+        t_to_o_instance = overrides.get("t_to_o_instance", input_assembly.assembly_id)
+        o_to_t_instance = overrides.get("o_to_t_instance", output_assembly.assembly_id)
 
         metadata: Dict[str, Any] = {
             "application_class": overrides.get("application_class", 0x04),
             "application_instance": application_instance,
-            "o_to_t_instance": overrides.get(
-                "o_to_t_instance", output_assembly.assembly_id
-            ),
-            "t_to_o_instance": overrides.get(
-                "t_to_o_instance", input_assembly.assembly_id
-            ),
+            "o_to_t_instance": o_to_t_instance,
+            "t_to_o_instance": t_to_o_instance,
             "o_to_t_size": overrides.get(
                 "o_to_t_size", max(1, _total_bytes(output_assembly.size_bits))
             ),
@@ -454,6 +450,13 @@ class SimulatorConfiguration:
             configuration_point = configuration.assembly_id
         if configuration_point is not None:
             metadata["configuration_point"] = configuration_point
+
+        connection_points: List[int] = [t_to_o_instance, o_to_t_instance]
+        if configuration_point is not None and configuration_point not in connection_points:
+            connection_points.append(configuration_point)
+        metadata["connection_points"] = overrides.get(
+            "connection_points", connection_points
+        )
 
         optional_keys = (
             "o_to_t_connection_id",
