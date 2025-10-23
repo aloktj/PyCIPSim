@@ -371,6 +371,106 @@ class SimulatorConfiguration:
             return 0
         return max(_total_bytes(assembly.size_bits) for assembly in self.assemblies)
 
+    def build_forward_open_metadata(self) -> Optional[Dict[str, Any]]:
+        """Compose metadata required for a Class-1 forward open."""
+
+        if not self.assemblies:
+            return None
+
+        def _direction(value: Optional[str]) -> str:
+            return (value or "").strip().lower()
+
+        inputs = [
+            assembly
+            for assembly in self.assemblies
+            if _direction(assembly.direction) in {"input", "in"}
+        ]
+        outputs = [
+            assembly
+            for assembly in self.assemblies
+            if _direction(assembly.direction) in {"output", "out"}
+        ]
+
+        if not inputs or not outputs:
+            return None
+
+        input_assembly = inputs[0]
+        output_assembly = outputs[0]
+
+        config_candidates = [
+            assembly
+            for assembly in self.assemblies
+            if _direction(assembly.direction) in {"config", "configuration"}
+        ]
+        if not config_candidates:
+            config_candidates = [
+                assembly
+                for assembly in self.assemblies
+                if "config" in assembly.name.lower()
+            ]
+        configuration = config_candidates[0] if config_candidates else None
+
+        overrides_raw = self.metadata.get("forward_open") if isinstance(self.metadata, dict) else None
+        overrides: Dict[str, Any] = {}
+        if isinstance(overrides_raw, dict):
+            overrides = dict(overrides_raw)
+
+        application_instance = overrides.get("application_instance")
+        if application_instance is None:
+            if configuration is not None:
+                application_instance = configuration.assembly_id
+            else:
+                application_instance = output_assembly.assembly_id
+
+        metadata: Dict[str, Any] = {
+            "application_class": overrides.get("application_class", 0x04),
+            "application_instance": application_instance,
+            "o_to_t_instance": overrides.get(
+                "o_to_t_instance", output_assembly.assembly_id
+            ),
+            "t_to_o_instance": overrides.get(
+                "t_to_o_instance", input_assembly.assembly_id
+            ),
+            "o_to_t_size": overrides.get(
+                "o_to_t_size", max(1, _total_bytes(output_assembly.size_bits))
+            ),
+            "t_to_o_size": overrides.get(
+                "t_to_o_size", max(1, _total_bytes(input_assembly.size_bits))
+            ),
+            "o_to_t_connection_type": overrides.get(
+                "o_to_t_connection_type", "point_to_point"
+            ),
+            "t_to_o_connection_type": overrides.get(
+                "t_to_o_connection_type",
+                "multicast" if self.multicast else "point_to_point",
+            ),
+            "o_to_t_rpi_us": overrides.get("o_to_t_rpi_us", 200_000),
+            "t_to_o_rpi_us": overrides.get("t_to_o_rpi_us", 200_000),
+            "transport_type_trigger": overrides.get("transport_type_trigger", 0x01),
+        }
+
+        configuration_point = overrides.get("configuration_point")
+        if configuration_point is None and configuration is not None:
+            configuration_point = configuration.assembly_id
+        if configuration_point is not None:
+            metadata["configuration_point"] = configuration_point
+
+        optional_keys = (
+            "o_to_t_connection_id",
+            "t_to_o_connection_id",
+            "connection_serial",
+            "vendor_id",
+            "originator_serial",
+            "timeout_multiplier",
+            "connection_points",
+            "use_large_forward_open",
+        )
+        for key in optional_keys:
+            if key in overrides:
+                metadata[key] = overrides[key]
+
+        return metadata
+
     @classmethod
     def from_dict(cls, raw: Dict[str, Any]) -> "SimulatorConfiguration":
         try:

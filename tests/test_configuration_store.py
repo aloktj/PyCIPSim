@@ -38,6 +38,35 @@ def _sample_configuration(*, direction: str = "input") -> SimulatorConfiguration
     return SimulatorConfiguration.from_dict(data)
 
 
+def test_forward_open_metadata_generation() -> None:
+    config = SimulatorConfiguration.from_dict(
+        {
+            "name": "Runtime",
+            "target": {
+                "ip": "10.0.0.10",
+                "port": 44818,
+                "multicast": True,
+            },
+            "assemblies": [
+                {"id": 1, "name": "Config", "direction": "config", "size_bits": 16},
+                {"id": 100, "name": "Inputs", "direction": "input", "size_bits": 32},
+                {"id": 200, "name": "Outputs", "direction": "output", "size_bits": 8},
+            ],
+        }
+    )
+
+    metadata = config.build_forward_open_metadata()
+    assert metadata is not None
+    assert metadata["application_instance"] == 1
+    assert metadata["t_to_o_instance"] == 100
+    assert metadata["o_to_t_instance"] == 200
+    assert metadata["configuration_point"] == 1
+    assert metadata["t_to_o_connection_type"] == "multicast"
+    assert metadata["o_to_t_connection_type"] == "point_to_point"
+    assert metadata["t_to_o_size"] == 4
+    assert metadata["o_to_t_size"] == 1
+
+
 def test_upsert_and_reload(tmp_path: Path) -> None:
     storage = tmp_path / "configs.json"
     store = ConfigurationStore(storage_path=storage)

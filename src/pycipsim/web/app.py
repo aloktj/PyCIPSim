@@ -69,6 +69,9 @@ class SimulatorManager:
             max_connection_size = config.max_connection_size_bytes()
             if max_connection_size > 0:
                 session_metadata["max_connection_size_bytes"] = max_connection_size
+            forward_open = config.build_forward_open_metadata()
+            if forward_open:
+                session_metadata["forward_open"] = forward_open
             allowed_hosts = list(SessionConfig().allowed_hosts)
             allowed_hosts.extend(config.allowed_hosts)
             allowed_hosts.append(config.target_ip)
