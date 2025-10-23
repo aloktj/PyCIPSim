@@ -5,6 +5,63 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, List, Optional
 
 
+# Common CIP atomic and composite data types supported by the simulator UI.
+CIP_SIGNAL_TYPES: List[str] = [
+    "BOOL",
+    "SINT",
+    "INT",
+    "DINT",
+    "LINT",
+    "USINT",
+    "UINT",
+    "UDINT",
+    "ULINT",
+    "BYTE",
+    "WORD",
+    "DWORD",
+    "LWORD",
+    "REAL",
+    "LREAL",
+    "TIME",
+    "DATE",
+    "TIME_OF_DAY",
+    "DATE_AND_TIME",
+    "STRING",
+    "SHORT_STRING",
+    "BITSTRING",
+    "ARRAY",
+    "STRUCT",
+]
+
+_SIGNAL_TYPE_LOOKUP = {item.lower(): item for item in CIP_SIGNAL_TYPES}
+
+
+def canonicalize_signal_type(value: str) -> str:
+    """Return the canonical representation for a signal type if known."""
+
+    if value is None:
+        return ""
+    text = str(value).strip()
+    if not text:
+        return ""
+    return _SIGNAL_TYPE_LOOKUP.get(text.lower(), text)
+
+
+def validate_signal_type(value: str) -> str:
+    """Validate a submitted signal type against the supported CIP types."""
+
+    try:
+        text = str(value).strip()
+    except Exception as exc:  # pragma: no cover - defensive
+        raise ConfigurationError("Signal type must be a string.") from exc
+    if not text:
+        raise ConfigurationError("Signal type cannot be empty.")
+    normalized = _SIGNAL_TYPE_LOOKUP.get(text.lower())
+    if not normalized:
+        raise ConfigurationError(f"Unsupported signal type '{value}'.")
+    return normalized
+
+
 class ConfigurationError(ValueError):
     """Raised when configuration data is invalid."""
 
@@ -23,10 +80,12 @@ class SignalDefinition:
         try:
             name = raw["name"]
             offset = int(raw["offset"])
-            signal_type = raw["type"]
+            signal_type_raw = raw["type"]
         except KeyError as exc:  # pragma: no cover - defensive
             raise ConfigurationError(f"Missing signal field: {exc.args[0]}") from exc
-        return cls(name=name, offset=offset, signal_type=str(signal_type), value=raw.get("value"))
+        canonical_type = canonicalize_signal_type(signal_type_raw)
+        signal_type = canonical_type or str(signal_type_raw)
+        return cls(name=name, offset=offset, signal_type=signal_type, value=raw.get("value"))
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -74,6 +133,14 @@ class AssemblyDefinition:
         """Iterate over contained signals."""
 
         return list(self.signals)
+
+    def find_signal_index(self, signal_name: str) -> int:
+        for index, signal in enumerate(self.signals):
+            if signal.name == signal_name:
+                return index
+        raise ConfigurationError(
+            f"Signal '{signal_name}' not found in assembly '{self.name}' ({self.assembly_id})."
+        )
 
 
 @dataclass(slots=True)
@@ -127,15 +194,31 @@ class SimulatorConfiguration:
             "assemblies": [assembly.to_dict() for assembly in self.assemblies],
         }
 
+    def find_assembly(self, assembly_id: int) -> AssemblyDefinition:
+        for assembly in self.assemblies:
+            if assembly.assembly_id == assembly_id:
+                return assembly
+        raise ConfigurationError(
+            f"Assembly '{assembly_id}' not found for configuration '{self.name}'."
+        )
+
+    def find_assembly_index(self, assembly_id: int) -> int:
+        """Return the position of an assembly within the configuration."""
+
+        for index, assembly in enumerate(self.assemblies):
+            if assembly.assembly_id == assembly_id:
+                return index
+        raise ConfigurationError(
+            f"Assembly '{assembly_id}' not found for configuration '{self.name}'."
+        )
+
     def find_signal(self, assembly_id: int, signal_name: str) -> SignalDefinition:
         """Locate a signal by assembly and name."""
 
-        for assembly in self.assemblies:
-            if assembly.assembly_id != assembly_id:
-                continue
-            for signal in assembly.signals:
-                if signal.name == signal_name:
-                    return signal
+        assembly = self.find_assembly(assembly_id)
+        for signal in assembly.signals:
+            if signal.name == signal_name:
+                return signal
         raise ConfigurationError(
             f"Signal '{signal_name}' not found in assembly {assembly_id} for configuration '{self.name}'."
         )
