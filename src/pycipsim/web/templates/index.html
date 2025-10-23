@@ -378,7 +378,12 @@
                             </td>
                             <td class="signal-actions">
                               {% if signal.is_padding %}
-                                <input type="text" value="Padding" readonly disabled />
+                                <input
+                                  type="text"
+                                  value="{{ signal.value if signal.value is not none else 0 }}"
+                                  readonly
+                                  disabled
+                                />
                               {% elif is_input_assembly %}
                                 <input
                                   type="text"

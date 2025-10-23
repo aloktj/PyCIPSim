@@ -388,7 +388,7 @@ def _build_padding_for_gap(start: int, length: int) -> List[SignalDefinition]:
                     name=f"padding_BOOL_{offset}",
                     offset=offset,
                     signal_type="BOOL",
-                    value="0",
+                    value=0,
                     size_bits=1,
                     is_padding=True,
                 )
@@ -411,7 +411,7 @@ def _build_padding_for_gap(start: int, length: int) -> List[SignalDefinition]:
                     name=f"padding_{signal_type}_{current}",
                     offset=current,
                     signal_type=signal_type,
-                    value="0",
+                    value=0,
                     size_bits=size_bits,
                     is_padding=True,
                 )
@@ -426,7 +426,7 @@ def _build_padding_for_gap(start: int, length: int) -> List[SignalDefinition]:
                 name=f"padding_USINT_{current}",
                 offset=current,
                 signal_type="USINT",
-                value="0",
+                value=0,
                 size_bits=8,
                 is_padding=True,
             )
@@ -441,7 +441,7 @@ def _build_padding_for_gap(start: int, length: int) -> List[SignalDefinition]:
                     name=f"padding_BOOL_{offset}",
                     offset=offset,
                     signal_type="BOOL",
-                    value="0",
+                    value=0,
                     size_bits=1,
                     is_padding=True,
                 )
