@@ -20,6 +20,7 @@ def _sample_configuration(*, direction: str = "input") -> SimulatorConfiguration
             "port": 44818,
             "receive_address": "239.1.1.1",
             "multicast": True,
+            "interface": "eth0",
         },
         "assemblies": [
             {
@@ -48,6 +49,7 @@ def test_upsert_and_reload(tmp_path: Path) -> None:
     assert len(configs) == 1
     assert configs[0].name == "DemoConfig"
     assert configs[0].target_ip == "192.168.1.10"
+    assert configs[0].network_interface == "eth0"
 
 
 def test_signal_updates_persist(tmp_path: Path) -> None:
@@ -66,6 +68,26 @@ def test_signal_updates_persist(tmp_path: Path) -> None:
     signal_b = updated.find_signal(100, "SignalB")
     assert signal_b.signal_type == "DINT"
     assert signal_b.value is None
+
+
+def test_update_target_records_interface(tmp_path: Path) -> None:
+    storage = tmp_path / "configs.json"
+    store = ConfigurationStore(storage_path=storage)
+    config = _sample_configuration(direction="output")
+    store.upsert(config)
+
+    store.update_target(
+        "DemoConfig",
+        target_ip="10.0.0.5",
+        target_port="44818",
+        receive_address="",
+        multicast=False,
+        network_interface="eth1",
+    )
+
+    refreshed = store.get("DemoConfig")
+    assert refreshed.target_ip == "10.0.0.5"
+    assert refreshed.network_interface == "eth1"
 
 
 def test_signal_type_validation(tmp_path: Path) -> None:

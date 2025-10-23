@@ -297,6 +297,7 @@ class SimulatorConfiguration:
     target_port: int = 44818
     receive_address: Optional[str] = None
     multicast: bool = False
+    network_interface: Optional[str] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
     assemblies: List[AssemblyDefinition] = field(default_factory=list)
 
@@ -312,6 +313,7 @@ class SimulatorConfiguration:
         target_port = int(target.get("port", 44818))
         receive_address = target.get("receive_address")
         multicast = bool(target.get("multicast", False))
+        network_interface = target.get("interface") or target.get("network_interface")
         assemblies = [AssemblyDefinition.from_dict(item) for item in raw.get("assemblies", [])]
         metadata = raw.get("metadata", {})
         if not isinstance(metadata, dict):  # pragma: no cover - defensive
@@ -324,6 +326,7 @@ class SimulatorConfiguration:
             target_port=target_port,
             receive_address=str(receive_address) if receive_address else None,
             multicast=multicast,
+            network_interface=str(network_interface) if network_interface else None,
             metadata=metadata,
             assemblies=assemblies,
         )
@@ -336,6 +339,7 @@ class SimulatorConfiguration:
                 "port": self.target_port,
                 "receive_address": self.receive_address,
                 "multicast": self.multicast,
+                "interface": self.network_interface,
             },
             "metadata": self.metadata,
             "assemblies": [assembly.to_dict() for assembly in self.assemblies],

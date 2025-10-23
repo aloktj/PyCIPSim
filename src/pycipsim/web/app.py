@@ -2,11 +2,12 @@
 from __future__ import annotations
 
 import json
+import socket
 import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Dict, List, Optional
 from urllib.parse import urlencode
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
@@ -47,6 +48,7 @@ class SimulatorManager:
             session_config = SessionConfig(
                 ip_address=config.target_ip,
                 port=config.target_port,
+                network_interface=config.network_interface,
                 metadata=config.metadata,
             )
             handshake = perform_handshake(session_config, simulate=simulate_handshake)
@@ -81,6 +83,39 @@ class SimulatorManager:
 def _templates() -> Jinja2Templates:
     root = Path(__file__).resolve().parent / "templates"
     return Jinja2Templates(directory=str(root))
+
+
+def _detect_network_interfaces() -> List[Dict[str, str]]:
+    """Return host network interfaces suitable for selection in the UI."""
+
+    try:  # pragma: no cover - optional dependency
+        import psutil  # type: ignore[import-untyped]
+    except Exception:  # pragma: no cover - fallback path
+        psutil = None  # type: ignore[assignment]
+
+    interfaces: List[Dict[str, str]] = []
+
+    if psutil:
+        try:
+            data = psutil.net_if_addrs()
+        except Exception:  # pragma: no cover - defensive
+            data = {}
+        for name, addrs in data.items():
+            labels: List[str] = []
+            for addr in addrs:
+                if addr.family == socket.AF_INET and addr.address:
+                    labels.append(addr.address)
+            label = name if not labels else f"{name} ({', '.join(labels)})"
+            interfaces.append({"name": name, "label": label})
+    else:
+        try:
+            for _, name in socket.if_nameindex():
+                interfaces.append({"name": name, "label": name})
+        except Exception:  # pragma: no cover - defensive
+            pass
+
+    interfaces.sort(key=lambda item: item["name"])
+    return interfaces
 
 
 def get_app(
@@ -130,6 +165,7 @@ def get_app(
                 "active": active,
                 "assembly_groups": assembly_groups,
                 "signal_types": CIP_SIGNAL_TYPES,
+                "network_interfaces": _detect_network_interfaces(),
                 "message": message,
                 "error": error,
             },
@@ -201,6 +237,7 @@ def get_app(
         target_port: str = Form(...),
         receive_address: Optional[str] = Form(None),
         multicast: Optional[str] = Form(None),
+        network_interface: Optional[str] = Form(None),
     ) -> RedirectResponse:
         try:
             manager.ensure_config_mutable(name)
@@ -210,6 +247,7 @@ def get_app(
                 target_port=target_port,
                 receive_address=receive_address,
                 multicast=bool(multicast),
+                network_interface=network_interface,
             )
         except RuntimeError as exc:
             return redirect("/", error=str(exc))

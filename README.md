@@ -150,7 +150,8 @@ this:
     "ip": "192.168.0.10",
     "port": 44818,
     "receive_address": "239.1.1.1",
-    "multicast": true
+    "multicast": true,
+    "interface": "eth0"
   },
   "assemblies": [
     {
@@ -168,6 +169,9 @@ this:
 
 Signals can be edited directly in the UI prior to starting the simulator. Once running, signal types and offsets are locked, but
 operators can use the provided set/clear controls to adjust payload values on the fly.
+
+Use the configuration panel to select the host network interface that should source CIP traffic. The choice is saved with the
+configuration and reused whenever the simulator starts, ensuring connections originate from the expected adapter.
 
 ### Batch & Parallel Execution
 

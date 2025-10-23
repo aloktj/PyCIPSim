@@ -110,6 +110,7 @@ class ConfigurationStore:
         target_port: str,
         receive_address: Optional[str],
         multicast: bool,
+        network_interface: Optional[str],
     ) -> SimulatorConfiguration:
         with self._lock:
             configuration = self.get(name)
@@ -125,6 +126,7 @@ class ConfigurationStore:
             configuration.target_port = port_value
             configuration.receive_address = receive_address or None
             configuration.multicast = multicast
+            configuration.network_interface = (network_interface or None)
             self._persist()
             return configuration
 

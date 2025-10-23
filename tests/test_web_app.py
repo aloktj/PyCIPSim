@@ -10,6 +10,14 @@ from pycipsim.config_store import ConfigurationStore, SimulatorConfiguration
 from pycipsim.web.app import SimulatorManager, get_app
 
 
+@pytest.fixture(autouse=True)
+def fake_interfaces(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "pycipsim.web.app._detect_network_interfaces",
+        lambda: [{"name": "eth0", "label": "eth0"}],
+    )
+
+
 @pytest.fixture()
 def store(tmp_path: Path) -> ConfigurationStore:
     return ConfigurationStore(storage_path=tmp_path / "configs.json")
@@ -18,7 +26,7 @@ def store(tmp_path: Path) -> ConfigurationStore:
 def _scenario_payload(name: str = "WebConfig") -> dict:
     return {
         "name": name,
-        "target": {"ip": "10.10.10.10", "port": 44818},
+        "target": {"ip": "10.10.10.10", "port": 44818, "interface": "eth0"},
         "assemblies": [
             {
                 "id": 200,
@@ -45,7 +53,9 @@ def test_upload_and_start_flow(store: ConfigurationStore) -> None:
         follow_redirects=False,
     )
     assert response.status_code == 303
-    assert list(store.list())[0].name == "WebConfig"
+    first = list(store.list())[0]
+    assert first.name == "WebConfig"
+    assert first.network_interface == "eth0"
 
     start_response = client.post("/configs/WebConfig/start", follow_redirects=False)
     assert start_response.status_code == 303
@@ -59,6 +69,31 @@ def test_upload_and_start_flow(store: ConfigurationStore) -> None:
     assert value_response.status_code == 303
     config = store.get("WebConfig")
     assert config.find_signal(200, "SigA").value == "1"
+
+
+def test_update_target_via_web(store: ConfigurationStore) -> None:
+    manager = SimulatorManager()
+    config = SimulatorConfiguration.from_dict(_scenario_payload())
+    store.upsert(config)
+    app = get_app(store=store, manager=manager)
+    client = TestClient(app)
+
+    response = client.post(
+        "/configs/WebConfig/target",
+        data={
+            "target_ip": "10.0.0.20",
+            "target_port": "44818",
+            "receive_address": "",
+            "multicast": "",
+            "network_interface": "eth0",
+        },
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    refreshed = store.get("WebConfig")
+    assert refreshed.target_ip == "10.0.0.20"
+    assert refreshed.network_interface == "eth0"
 
 
 def test_type_update_blocked_when_running(store: ConfigurationStore) -> None:

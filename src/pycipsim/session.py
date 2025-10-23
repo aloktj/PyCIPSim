@@ -5,6 +5,7 @@ import contextlib
 import copy
 import logging
 import os
+import socket
 import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, List, Optional, Protocol, Sequence, Tuple
@@ -12,6 +13,28 @@ from typing import Any, Dict, Iterable, List, Optional, Protocol, Sequence, Tupl
 from .device import DeviceProfile, ServiceRequest, ServiceResponse
 
 _LOGGER = logging.getLogger(__name__)
+
+
+def _find_interface_ipv4(interface: str) -> Optional[str]:
+    """Attempt to resolve the primary IPv4 address for a network interface."""
+
+    try:  # pragma: no cover - optional dependency
+        import psutil  # type: ignore[import-untyped]
+    except Exception:  # pragma: no cover - fallback when psutil is missing
+        psutil = None  # type: ignore[assignment]
+
+    if psutil is None:
+        return None
+
+    try:
+        addrs = psutil.net_if_addrs().get(interface, [])
+    except Exception:  # pragma: no cover - defensive
+        return None
+
+    for addr in addrs:
+        if addr.family == socket.AF_INET and addr.address:
+            return addr.address
+    return None
 
 
 class TransportError(RuntimeError):
@@ -40,6 +63,7 @@ class SessionConfig:
     timeout: float = 2.5
     retries: int = 3
     slot: Optional[int] = None
+    network_interface: Optional[str] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
     allowed_hosts: Sequence[str] = field(
         default_factory=lambda: ("127.0.0.1", "localhost")
@@ -58,6 +82,20 @@ class SessionConfig:
             os.getenv(self.password_env_var) if self.password_env_var else None
         )
         return {"username": username, "password": password}
+
+    def resolve_source_address(self) -> Optional[Tuple[str, int]]:
+        """Return a socket source address derived from the configured interface."""
+
+        if not self.network_interface:
+            return None
+        address = _find_interface_ipv4(self.network_interface)
+        if not address:
+            _LOGGER.warning(
+                "Network interface '%s' has no IPv4 address; falling back to default routing.",
+                self.network_interface,
+            )
+            return None
+        return (address, 0)
 
 
 class SimulatedTransport:
