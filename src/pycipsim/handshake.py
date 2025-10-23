@@ -102,7 +102,15 @@ def _resolve_driver(config: SessionConfig) -> HandshakeDriver:
             if not self._driver._forward_open():  # type: ignore[attr-defined]
                 raise RuntimeError("Failed to perform CIP forward open")
 
+        def forward_close(self) -> None:
+            with contextlib.suppress(Exception):
+                forward_close = getattr(self._driver, "_forward_close", None)
+                if callable(forward_close):
+                    forward_close()
+
         def close(self) -> None:
+            with contextlib.suppress(Exception):
+                self.forward_close()
             with contextlib.suppress(Exception):
                 self._driver.close()
 
@@ -183,6 +191,10 @@ def perform_handshake(
             return HandshakeResult(False, steps, error=detail, duration_ms=_elapsed_ms(start))
     finally:
         if driver is not None:
+            with contextlib.suppress(Exception):
+                forward_close = getattr(driver, "forward_close", None)
+                if callable(forward_close):
+                    forward_close()
             with contextlib.suppress(Exception):
                 driver.close()
 

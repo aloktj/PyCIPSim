@@ -74,6 +74,40 @@ def test_custom_driver_handles_forward_open() -> None:
     assert events == ["tcp", "open", "forward_open", "close"]
 
 
+def test_driver_forward_close_invoked_when_available() -> None:
+    config = SessionConfig()
+    events: List[str] = []
+
+    class DummyDriver:
+        def open(self) -> None:
+            events.append("open")
+
+        def forward_open(self) -> None:
+            events.append("forward_open")
+
+        def forward_close(self) -> None:
+            events.append("forward_close")
+
+        def close(self) -> None:
+            events.append("close")
+
+    def driver_factory(_: SessionConfig) -> DummyDriver:
+        return DummyDriver()
+
+    def connector(_: SessionConfig) -> None:
+        events.append("tcp")
+
+    result = perform_handshake(
+        config,
+        simulate=False,
+        driver_factory=driver_factory,
+        tcp_connector=connector,
+    )
+
+    assert result.success
+    assert events == ["tcp", "open", "forward_open", "forward_close", "close"]
+
+
 def test_driver_factory_failure_records_enip_step() -> None:
     config = SessionConfig()
 
