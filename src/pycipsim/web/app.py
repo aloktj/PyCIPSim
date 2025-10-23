@@ -69,11 +69,23 @@ class SimulatorManager:
             max_connection_size = config.max_connection_size_bytes()
             if max_connection_size > 0:
                 session_metadata["max_connection_size_bytes"] = max_connection_size
+            allowed_hosts = list(SessionConfig().allowed_hosts)
+            allowed_hosts.extend(config.allowed_hosts)
+            allowed_hosts.append(config.target_ip)
+            deduped_hosts: list[str] = []
+            seen_hosts: set[str] = set()
+            for host in allowed_hosts:
+                if not host or host in seen_hosts:
+                    continue
+                deduped_hosts.append(host)
+                seen_hosts.add(host)
             session_config = SessionConfig(
                 ip_address=config.target_ip,
                 port=config.target_port,
                 network_interface=config.network_interface,
                 metadata=session_metadata,
+                allowed_hosts=tuple(deduped_hosts),
+                allow_external=config.allow_external,
             )
             mode = (config.runtime_mode or "simulated").lower()
             should_run_runtime = mode == "live"
@@ -328,9 +340,12 @@ def get_app(
         multicast: Optional[str] = Form(None),
         network_interface: Optional[str] = Form(None),
         runtime_mode: Optional[str] = Form(None),
+        allowed_hosts: Optional[str] = Form(None),
+        allow_external: Optional[str] = Form(None),
     ) -> RedirectResponse:
         try:
             manager.ensure_config_mutable(name)
+            allow_external_flag = allow_external is not None
             store.update_target(
                 name,
                 target_ip=target_ip,
@@ -339,6 +354,8 @@ def get_app(
                 multicast=bool(multicast),
                 network_interface=network_interface,
                 runtime_mode=runtime_mode,
+                allowed_hosts=allowed_hosts,
+                allow_external=allow_external_flag,
             )
         except RuntimeError as exc:
             return redirect("/", error=str(exc))

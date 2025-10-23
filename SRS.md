@@ -114,6 +114,8 @@ The system shall be capable of handling at least 100 CIP message exchanges per s
 
 ### 5.2 Safety Requirements
 The system shall ensure that simulated traffic remains within user-defined network boundaries to prevent unintended interactions with production devices. Safeguards shall include explicit whitelists of reachable IP addresses and warning prompts before connecting to external networks.
+The web dashboard shall expose controls for managing the whitelist (including optional overrides) so operators can authorize
+remote lab equipment without editing configuration files manually.
 
 ### 5.3 Security Requirements
 The system shall avoid storing sensitive credentials in plain text by supporting environment variable configuration and secure credential storage mechanisms when available. Access controls shall restrict modification of simulation configurations to authorized users in shared environments.

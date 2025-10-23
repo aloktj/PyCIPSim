@@ -13,6 +13,7 @@ from .configuration import (
     SimulatorConfiguration,
     SignalDefinition,
     normalize_runtime_mode,
+    parse_allowed_hosts,
     validate_signal_type,
 )
 
@@ -140,6 +141,8 @@ class ConfigurationStore:
         multicast: bool,
         network_interface: Optional[str],
         runtime_mode: Optional[str],
+        allowed_hosts: Optional[str] = None,
+        allow_external: Optional[bool] = None,
     ) -> SimulatorConfiguration:
         with self._lock:
             configuration = self.get(name)
@@ -158,6 +161,10 @@ class ConfigurationStore:
             configuration.network_interface = (network_interface or None)
             if runtime_mode:
                 configuration.runtime_mode = normalize_runtime_mode(runtime_mode)
+            if allowed_hosts is not None:
+                configuration.allowed_hosts = parse_allowed_hosts(allowed_hosts)
+            if allow_external is not None:
+                configuration.allow_external = bool(allow_external)
             self._persist()
             return configuration
 

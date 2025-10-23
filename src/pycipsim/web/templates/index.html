@@ -186,9 +186,18 @@
                   </select>
                 </label>
               </div>
+              <div class="inline-field">
+                <label>Allowed Hosts
+                  <input type="text" name="allowed_hosts" value="{{ current.allowed_hosts_text }}" {% if is_running %}disabled{% endif %} placeholder="Comma-separated" />
+                </label>
+              </div>
               <label>
                 <input type="checkbox" name="multicast" value="on" {% if current.multicast %}checked{% endif %} {% if is_running %}disabled{% endif %} />
                 Multicast
+              </label>
+              <label>
+                <input type="checkbox" name="allow_external" value="on" {% if current.allow_external %}checked{% endif %} {% if is_running %}disabled{% endif %} />
+                Allow external targets
               </label>
               <div>
                 <button type="submit" {% if is_running %}disabled{% endif %}>Save Target</button>

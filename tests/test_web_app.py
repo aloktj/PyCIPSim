@@ -67,9 +67,9 @@ def manager(store: ConfigurationStore):
     def factory(session_config: SessionConfig, sim_config: SimulatorConfiguration) -> CIPSession:
         transport = _StubTransport(sim_config)
         transports.append(transport)
+        assert session_config.ip_address in session_config.allowed_hosts
+        assert session_config.allow_external == sim_config.allow_external
         session = CIPSession(session_config, transport=transport)
-        session.config.allow_external = True
-        session.config.allowed_hosts = tuple(list(session.config.allowed_hosts) + [session_config.ip_address])
         return session
 
     manager = SimulatorManager(
@@ -163,6 +163,8 @@ def test_update_target_via_web(
             "multicast": "",
             "network_interface": "eth0",
             "runtime_mode": "simulated",
+            "allowed_hosts": "192.168.1.100, example.local",
+            "allow_external": "on",
         },
         follow_redirects=False,
     )
@@ -172,6 +174,8 @@ def test_update_target_via_web(
     assert refreshed.target_ip == "10.0.0.20"
     assert refreshed.network_interface == "eth0"
     assert refreshed.runtime_mode == "simulated"
+    assert refreshed.allowed_hosts == ("192.168.1.100", "example.local")
+    assert refreshed.allow_external is True
 
 
 def test_start_simulated_mode_skips_runtime(

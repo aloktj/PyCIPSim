@@ -4,7 +4,114 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 import math
 import struct
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterable, List, Optional, Tuple
+
+
+# Common CIP atomic and composite data types supported by the simulator UI.
+CIP_SIGNAL_TYPES: List[str] = [
+    "BOOL",
+    "SINT",
+    "INT",
+    "DINT",
+    "LINT",
+    "USINT",
+    "UINT",
+    "UDINT",
+    "ULINT",
+    "BYTE",
+    "WORD",
+    "DWORD",
+    "LWORD",
+    "REAL",
+    "LREAL",
+    "TIME",
+    "DATE",
+    "TIME_OF_DAY",
+    "DATE_AND_TIME",
+    "STRING",
+    "SHORT_STRING",
+    "BITSTRING",
+    "ARRAY",
+    "STRUCT",
+]
+
+_SIGNAL_TYPE_LOOKUP = {item.lower(): item for item in CIP_SIGNAL_TYPES}
+
+# Runtime operating modes supported by the simulator. "simulated" keeps the
+# legacy behaviour (no live transport), while "live" enables network sessions.
+RUNTIME_MODES: tuple[str, ...] = ("simulated", "live")
+
+
+# Nominal bit widths for well-known CIP signal types.
+_CIP_SIGNAL_TYPE_BITS: Dict[str, int] = {
+    "BOOL": 1,
+    "SINT": 8,
+    "INT": 16,
+    "DINT": 32,
+    "LINT": 64,
+    "USINT": 8,
+    "UINT": 16,
+    "UDINT": 32,
+    "ULINT": 64,
+    "BYTE": 8,
+    "WORD": 16,
+    "DWORD": 32,
+    "LWORD": 64,
+    "REAL": 32,
+    "LREAL": 64,
+    "TIME": 32,
+    "DATE": 16,
+    "TIME_OF_DAY": 32,
+    "DATE_AND_TIME": 64,
+}
+
+# Preferred padding types by size so gaps can be filled with the fewest
+# auto-generated signals possible while maintaining byte-aligned packing.
+_PADDING_TYPE_CANDIDATES: List[tuple[int, str]] = [
+    (64, "ULINT"),
+    (32, "UDINT"),
+    (16, "UINT"),
+    (8, "USINT"),
+]
+
+_SIGNED_SIGNAL_TYPES = {"SINT", "INT", "DINT", "LINT"}
+_UNSIGNED_SIGNAL_TYPES = {
+    "USINT",
+    "UINT",
+    "UDINT",
+    "ULINT",
+    "BYTE",
+    "WORD",
+    "DWORD",
+    "LWORD",
+}
+_FLOAT_SIGNAL_TYPES = {"REAL", "LREAL"}
+
+
+def canonicalize_signal_type(value: str) -> str:
+    """Return the canonical representation for a signal type if known."""
+
+    if value is None:
+        return ""
+    text = str(value).strip()
+    if not text:
+        return ""
+    return _SIGNAL_TYPE_LOOKUP.get(text.lower(), text)
+
+
+def validate_signal_type(value: str) -> str:
+    """Validate a submitted signal type against the supported CIP types."""
+
+    try:
+        text = str(value).strip()
+    except Exception as exc:  # pragma: no cover - defensive
+        raise ConfigurationError("Signal type must be a string.") from exc
+    if not text:
+        raise ConfigurationError("Signal type cannot be empty.")
+    normalized = _SIGNAL_TYPE_LOOKUP.get(text.lower())
+    if not normalized:
+        raise ConfigurationError(f"Unsupported signal type '{value}'.")
+    return normalized
 
 
 # Common CIP atomic and composite data types supported by the simulator UI.
@@ -127,6 +234,36 @@ def normalize_runtime_mode(value: Optional[str]) -> str:
     if text not in RUNTIME_MODES:
         raise ConfigurationError(f"Unsupported runtime mode '{value}'.")
     return text
+
+
+def parse_allowed_hosts(raw: Any) -> Tuple[str, ...]:
+    """Convert arbitrary data into a normalized tuple of allowed hosts."""
+
+    if raw is None:
+        return tuple()
+    hosts: List[str] = []
+    source: Iterable[Any]
+    if isinstance(raw, (list, tuple, set)):
+        source = raw
+    else:
+        text = str(raw).replace("\n", ",")
+        source = text.split(",")
+    for item in source:
+        try:
+            candidate = str(item).strip()
+        except Exception:  # pragma: no cover - defensive
+            continue
+        if not candidate:
+            continue
+        hosts.append(candidate)
+    seen = set()
+    normalized: List[str] = []
+    for host in hosts:
+        if host in seen:
+            continue
+        seen.add(host)
+        normalized.append(host)
+    return tuple(normalized)
 
 
 @dataclass(slots=True)
@@ -330,6 +467,8 @@ class SimulatorConfiguration:
     network_interface: Optional[str] = None
     runtime_mode: str = "simulated"
     metadata: Dict[str, Any] = field(default_factory=dict)
+    allowed_hosts: Tuple[str, ...] = field(default_factory=tuple)
+    allow_external: bool = False
     assemblies: List[AssemblyDefinition] = field(default_factory=list)
 
     def max_connection_size_bytes(self) -> int:
@@ -363,6 +502,15 @@ class SimulatorConfiguration:
         )
         if runtime_mode == "simulated" and "runtime_mode" in raw:
             runtime_mode = normalize_runtime_mode(raw.get("runtime_mode"))
+        allowed_hosts_raw: Any = None
+        allow_external = False
+        if isinstance(target, dict):
+            allowed_hosts_raw = target.get("allowed_hosts")
+            allow_external = bool(target.get("allow_external", False))
+        if allowed_hosts_raw is None:
+            allowed_hosts_raw = raw.get("allowed_hosts")
+        if not allow_external and "allow_external" in raw:
+            allow_external = bool(raw.get("allow_external", False))
         return cls(
             name=str(name),
             target_ip=str(target_ip),
@@ -373,6 +521,8 @@ class SimulatorConfiguration:
             runtime_mode=runtime_mode,
             metadata=metadata,
             assemblies=assemblies,
+            allowed_hosts=parse_allowed_hosts(allowed_hosts_raw),
+            allow_external=allow_external,
         )
 
     def to_dict(self) -> Dict[str, Any]:
@@ -385,10 +535,20 @@ class SimulatorConfiguration:
                 "multicast": self.multicast,
                 "interface": self.network_interface,
                 "mode": self.runtime_mode,
+                "allowed_hosts": list(self.allowed_hosts),
+                "allow_external": self.allow_external,
             },
             "metadata": self.metadata,
             "assemblies": [assembly.to_dict() for assembly in self.assemblies],
         }
+
+    @property
+    def allowed_hosts_text(self) -> str:
+        """Return a comma-separated representation of configured allowed hosts."""
+
+        if not self.allowed_hosts:
+            return ""
+        return ", ".join(self.allowed_hosts)
 
     def find_assembly(self, assembly_id: int) -> AssemblyDefinition:
         for assembly in self.assemblies:

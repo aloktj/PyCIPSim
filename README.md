@@ -176,6 +176,10 @@ configuration and reused whenever the simulator starts, ensuring connections ori
 panel exposes a **Connection Mode** selector: choose *Simulated* to exercise the UI without opening sockets, or switch to *Live*
 to attempt real TCP/ENIP/CIP exchanges with the target device.
 
+For environments with strict egress policies, populate the **Allowed Hosts** field with any additional IPs or hostnames the
+simulator is permitted to contact. The active target IP is automatically whitelisted at runtime, and you can tick **Allow
+external targets** to bypass the whitelist entirely when connecting to lab hardware outside the default loopback range.
+
 ### Batch & Parallel Execution
 
 PyCIPSim now supports multi-scenario runs so that development and regression testing can happen in parallel:

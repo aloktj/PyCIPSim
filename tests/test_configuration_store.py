@@ -85,12 +85,16 @@ def test_update_target_records_interface(tmp_path: Path) -> None:
         multicast=False,
         network_interface="eth1",
         runtime_mode="live",
+        allowed_hosts="10.0.0.1, 10.0.0.2",
+        allow_external=True,
     )
 
     refreshed = store.get("DemoConfig")
     assert refreshed.target_ip == "10.0.0.5"
     assert refreshed.network_interface == "eth1"
     assert refreshed.runtime_mode == "live"
+    assert refreshed.allowed_hosts == ("10.0.0.1", "10.0.0.2")
+    assert refreshed.allow_external is True
 
 
 def test_update_target_rejects_invalid_runtime_mode(tmp_path: Path) -> None:
