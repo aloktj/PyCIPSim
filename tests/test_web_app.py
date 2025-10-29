@@ -258,6 +258,41 @@ def test_type_update_blocked_when_running(
     assert config_after.find_signal(200, "SigA").signal_type == "BOOL"
 
 
+def test_delete_running_configuration_reports_error(
+    store: ConfigurationStore, manager: SimulatorManager
+) -> None:
+    payload = _scenario_payload()
+    payload["target"]["mode"] = "simulated"
+    config = SimulatorConfiguration.from_dict(payload)
+    store.upsert(config)
+    manager.start(config, store)
+    app = get_app(store=store, manager=manager)
+    client = TestClient(app)
+
+    response = client.post("/configs/WebConfig/delete", follow_redirects=False)
+    assert response.status_code == 303
+    location = response.headers["location"]
+    parsed = urlparse(location)
+    params = parse_qs(parsed.query)
+    assert params.get("error") == ["Configuration is locked while the simulator is running."]
+    assert store.get("WebConfig")
+
+
+def test_delete_missing_configuration_reports_error(
+    store: ConfigurationStore, manager: SimulatorManager
+) -> None:
+    app = get_app(store=store, manager=manager)
+    client = TestClient(app)
+
+    response = client.post("/configs/Unknown/delete", follow_redirects=False)
+    assert response.status_code == 303
+    location = response.headers["location"]
+    parsed = urlparse(location)
+    params = parse_qs(parsed.query)
+    assert params.get("error") == ["Configuration not found"]
+    assert list(store.list()) == []
+
+
 def test_invalid_signal_type_rejected(
     store: ConfigurationStore, manager: SimulatorManager
 ) -> None:
