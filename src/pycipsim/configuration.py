@@ -41,10 +41,6 @@ _SIGNAL_TYPE_LOOKUP = {item.lower(): item for item in CIP_SIGNAL_TYPES}
 # legacy behaviour (no live transport), while "live" enables network sessions.
 RUNTIME_MODES: tuple[str, ...] = ("simulated", "live")
 
-# Supported simulator roles. Originators actively connect to a target while
-# the target role hosts ENIP sessions that originators can connect to.
-SIMULATOR_ROLES: tuple[str, ...] = ("originator", "target")
-
 
 # Nominal bit widths for well-known CIP signal types.
 _CIP_SIGNAL_TYPE_BITS: Dict[str, int] = {
@@ -130,17 +126,6 @@ def normalize_runtime_mode(value: Optional[str]) -> str:
         return "simulated"
     if text not in RUNTIME_MODES:
         raise ConfigurationError(f"Unsupported runtime mode '{value}'.")
-    return text
-
-
-def normalize_role(value: Optional[str]) -> str:
-    """Validate and canonicalize the simulator role."""
-
-    text = "originator" if value is None else str(value).strip().lower()
-    if not text:
-        return "originator"
-    if text not in SIMULATOR_ROLES:
-        raise ConfigurationError(f"Unsupported simulator role '{value}'.")
     return text
 
 
@@ -664,6 +649,13 @@ class SimulatorConfiguration:
 
         return metadata
 
+    def max_connection_size_bytes(self) -> int:
+        """Return the maximum assembly size in bytes for forward-open sizing."""
+
+        if not self.assemblies:
+            return 0
+        return max(_total_bytes(assembly.size_bits) for assembly in self.assemblies)
+
     @classmethod
     def from_dict(cls, raw: Dict[str, Any]) -> "SimulatorConfiguration":
         try:
@@ -697,19 +689,6 @@ class SimulatorConfiguration:
             allowed_hosts_raw = raw.get("allowed_hosts")
         if not allow_external and "allow_external" in raw:
             allow_external = bool(raw.get("allow_external", False))
-        listener_raw = raw.get("listener", {})
-        if listener_raw is None:
-            listener_raw = {}
-        listener_host = listener_raw.get("host", listener_raw.get("address", "0.0.0.0")) or "0.0.0.0"
-        listener_port_raw = listener_raw.get("port", 44818)
-        try:
-            listener_port = int(listener_port_raw)
-        except (TypeError, ValueError) as exc:  # pragma: no cover - defensive
-            raise ConfigurationError("Listener port must be an integer.") from exc
-        listener_interface = listener_raw.get("interface") or listener_raw.get("network_interface")
-
-        role = normalize_role(raw.get("role"))
-
         return cls(
             name=str(name),
             target_ip=str(target_ip),
@@ -722,10 +701,6 @@ class SimulatorConfiguration:
             assemblies=assemblies,
             allowed_hosts=parse_allowed_hosts(allowed_hosts_raw),
             allow_external=allow_external,
-            role=role,
-            listener_host=str(listener_host),
-            listener_port=listener_port,
-            listener_interface=str(listener_interface) if listener_interface else None,
         )
 
     def to_dict(self) -> Dict[str, Any]:
@@ -758,15 +733,6 @@ class SimulatorConfiguration:
         if not self.allowed_hosts:
             return ""
         return ", ".join(self.allowed_hosts)
-
-    def default_production_interval_seconds(self) -> float:
-        """Return a representative production interval for cyclic updates."""
-
-        intervals = [assembly.production_interval_seconds() for assembly in self.assemblies]
-        positive = [interval for interval in intervals if interval > 0]
-        if not positive:
-            return 0.1
-        return min(positive)
 
     def find_assembly(self, assembly_id: int) -> AssemblyDefinition:
         for assembly in self.assemblies:

@@ -243,7 +243,7 @@ class PyComm3Transport:
                 raise TransportError(str(exc)) from exc
             duration = (time.perf_counter() - start) * 1000
             if tag.error:
-                status = _summarize_cip_error(tag.error)
+                status = str(tag.error)
             else:
                 status = "SUCCESS"
             response_payload: Optional[bytes]
@@ -307,7 +307,7 @@ class PyComm3Transport:
         start = time.perf_counter()
         try:
             tag = self._driver.generic_message(
-                service=resolve_service_code(request.service_code),
+                service=request.service_code,
                 class_code=class_code_int,
                 instance=instance_int,
                 attribute=attribute_int,
@@ -318,7 +318,7 @@ class PyComm3Transport:
         except Exception as exc:  # pragma: no cover - depends on network
             raise TransportError(str(exc)) from exc
         duration = (time.perf_counter() - start) * 1000
-        status = "SUCCESS" if not tag.error else _summarize_cip_error(tag.error)
+        status = "SUCCESS" if not tag.error else str(tag.error)
         value = tag.value
         if isinstance(value, bytearray):
             payload = bytes(value)

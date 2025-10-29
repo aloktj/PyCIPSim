@@ -13,7 +13,6 @@ from .configuration import (
     SimulatorConfiguration,
     SignalDefinition,
     normalize_runtime_mode,
-    normalize_role,
     parse_allowed_hosts,
     validate_signal_type,
 )
@@ -144,10 +143,6 @@ class ConfigurationStore:
         runtime_mode: Optional[str],
         allowed_hosts: Optional[str] = None,
         allow_external: Optional[bool] = None,
-        role: Optional[str] = None,
-        listener_host: Optional[str] = None,
-        listener_port: Optional[str] = None,
-        listener_interface: Optional[str] = None,
     ) -> SimulatorConfiguration:
         with self._lock:
             configuration = self.get(name)
@@ -170,173 +165,8 @@ class ConfigurationStore:
                 configuration.allowed_hosts = parse_allowed_hosts(allowed_hosts)
             if allow_external is not None:
                 configuration.allow_external = bool(allow_external)
-            if role is not None:
-                configuration.role = normalize_role(role)
-            if listener_host is not None:
-                configuration.listener_host = listener_host.strip() or "0.0.0.0"
-            if listener_port is not None:
-                text = listener_port.strip()
-                if text:
-                    try:
-                        parsed_listener_port = int(text, 0)
-                    except (TypeError, ValueError) as exc:
-                        raise ConfigurationError("Listener port must be an integer.") from exc
-                    if not (0 <= parsed_listener_port < 65536):
-                        raise ConfigurationError(
-                            "Listener port must be between 0 and 65535."
-                        )
-                    configuration.listener_port = parsed_listener_port
-            if listener_interface is not None:
-                configuration.listener_interface = listener_interface or None
             self._persist()
             return configuration
-
-    def update_forward_open(
-        self,
-        name: str,
-        form_data: Iterable[tuple[str, Any]] | Dict[str, Any],
-    ) -> Dict[str, Any]:
-        """Update stored forward-open overrides for a configuration."""
-
-        def _as_mapping(data: Iterable[tuple[str, Any]] | Dict[str, Any]) -> Dict[str, Any]:
-            if isinstance(data, dict):
-                return dict(data)
-            payload: Dict[str, Any] = {}
-            for key, value in data:
-                payload[key] = value
-            return payload
-
-        def _optional_int(
-            mapping: Dict[str, Any],
-            key: str,
-            *,
-            minimum: Optional[int] = None,
-        ) -> Optional[int]:
-            raw = mapping.get(key)
-            if raw is None:
-                return None
-            text = str(raw).strip()
-            if not text:
-                return None
-            try:
-                value = int(text, 0)
-            except Exception as exc:  # pragma: no cover - defensive
-                raise ConfigurationError(
-                    f"Forward-open field '{key}' must be an integer."
-                ) from exc
-            if minimum is not None and value < minimum:
-                raise ConfigurationError(
-                    f"Forward-open field '{key}' must be at least {minimum}."
-                )
-            return value
-
-        def _optional_connection_type(mapping: Dict[str, Any], key: str) -> Optional[str]:
-            raw = mapping.get(key)
-            if raw is None:
-                return None
-            text = str(raw).strip().lower()
-            if not text:
-                return None
-            mapping_table = {
-                "point_to_point": "point_to_point",
-                "point-to-point": "point_to_point",
-                "p2p": "point_to_point",
-                "unicast": "point_to_point",
-                "multicast": "multicast",
-                "multi": "multicast",
-            }
-            if text not in mapping_table:
-                raise ConfigurationError(
-                    f"Forward-open field '{key}' must be point_to_point or multicast."
-                )
-            return mapping_table[text]
-
-        def _optional_points(mapping: Dict[str, Any], key: str) -> Optional[list[int]]:
-            raw = mapping.get(key)
-            if raw is None:
-                return None
-            text = str(raw).replace("\n", ",").strip()
-            if not text:
-                return None
-            points: list[int] = []
-            for token in text.replace(";", ",").split(","):
-                chunk = token.strip()
-                if not chunk:
-                    continue
-                try:
-                    value = int(chunk, 0)
-                except Exception as exc:  # pragma: no cover - defensive
-                    raise ConfigurationError(
-                        f"Forward-open connection point '{chunk}' is not numeric."
-                    ) from exc
-                if value < 0:
-                    raise ConfigurationError(
-                        "Forward-open connection points cannot be negative."
-                    )
-                if value not in points:
-                    points.append(value)
-            return points
-
-        with self._lock:
-            configuration = self.get(name)
-            payload = _as_mapping(form_data)
-            metadata = dict(configuration.metadata)
-            existing = metadata.get("forward_open")
-            overrides = dict(existing) if isinstance(existing, dict) else {}
-
-            def _assign_int(field: str, *, minimum: Optional[int] = None) -> None:
-                value = _optional_int(payload, field, minimum=minimum)
-                if value is None:
-                    overrides.pop(field, None)
-                else:
-                    overrides[field] = value
-
-            for field, minimum in (
-                ("application_class", 0),
-                ("application_instance", 0),
-                ("o_to_t_instance", 0),
-                ("t_to_o_instance", 0),
-                ("configuration_point", 0),
-                ("o_to_t_size", 1),
-                ("t_to_o_size", 1),
-                ("o_to_t_header_bytes", 0),
-                ("t_to_o_header_bytes", 0),
-                ("o_to_t_rpi_us", 1),
-                ("t_to_o_rpi_us", 1),
-                ("transport_type_trigger", 0),
-                ("timeout_multiplier", 0),
-                ("connection_serial", 1),
-                ("vendor_id", 0),
-                ("originator_serial", 1),
-                ("o_to_t_connection_id", 0),
-                ("t_to_o_connection_id", 0),
-            ):
-                _assign_int(field, minimum=minimum)
-
-            for field in ("o_to_t_connection_type", "t_to_o_connection_type"):
-                value = _optional_connection_type(payload, field)
-                if value is None:
-                    overrides.pop(field, None)
-                else:
-                    overrides[field] = value
-
-            points = _optional_points(payload, "connection_points")
-            if points is None:
-                overrides.pop("connection_points", None)
-            else:
-                overrides["connection_points"] = points
-
-            if payload.get("use_large_forward_open"):
-                overrides["use_large_forward_open"] = True
-            else:
-                overrides.pop("use_large_forward_open", None)
-
-            metadata["forward_open"] = overrides if overrides else {}
-            if not metadata["forward_open"]:
-                metadata.pop("forward_open")
-            configuration.metadata = metadata
-            self._persist()
-            return dict(metadata.get("forward_open", {}))
 
     def update_signal_details(
         self,
@@ -392,7 +222,6 @@ class ConfigurationStore:
         new_id: str,
         direction: str,
         size_bits: Optional[str] = None,
-        production_interval: Optional[str] = None,
     ) -> AssemblyDefinition:
         with self._lock:
             configuration = self.get(name)
@@ -401,7 +230,6 @@ class ConfigurationStore:
             original_id = assembly.assembly_id
             original_direction = assembly.direction
             original_size = assembly.size_bits
-            original_interval = assembly.production_interval_ms
             try:
                 try:
                     parsed_id = int(str(new_id), 0)
@@ -436,34 +264,15 @@ class ConfigurationStore:
                         raise ConfigurationError(
                             "Assembly size (bits) cannot be negative."
                         )
-                if production_interval is None:
-                    parsed_interval = assembly.production_interval_ms
-                else:
-                    text = str(production_interval).strip()
-                    if not text:
-                        parsed_interval = None
-                    else:
-                        try:
-                            parsed_interval = int(text, 0)
-                        except (TypeError, ValueError) as exc:
-                            raise ConfigurationError(
-                                "Production interval must be an integer in milliseconds."
-                            ) from exc
-                        if parsed_interval < 0:
-                            raise ConfigurationError(
-                                "Production interval cannot be negative."
-                            )
                 assembly.assembly_id = parsed_id
                 assembly.direction = canonical_direction
                 assembly.size_bits = parsed_size
-                assembly.production_interval_ms = parsed_interval
                 assembly.rebuild_padding()
             except Exception:
                 assembly.signals = original_signals
                 assembly.assembly_id = original_id
                 assembly.direction = original_direction
                 assembly.size_bits = original_size
-                assembly.production_interval_ms = original_interval
                 raise
             self._persist()
             return assembly
@@ -478,7 +287,6 @@ class ConfigurationStore:
         size_bits: str,
         position: str = "end",
         relative_assembly: Optional[str] = None,
-        production_interval: Optional[str] = None,
     ) -> AssemblyDefinition:
         """Insert a new assembly into the configuration."""
 
@@ -508,55 +316,38 @@ class ConfigurationStore:
             else:
                 raise ConfigurationError("Assembly direction must be either 'input' or 'output'.")
 
-        try:
-            parsed_size = int(size_bits)
-        except (TypeError, ValueError) as exc:
-            raise ConfigurationError("Assembly size (bits) must be an integer.") from exc
-        if parsed_size < 0:
-            raise ConfigurationError("Assembly size (bits) cannot be negative.")
-
-        if production_interval is None:
-            parsed_interval = None
-        else:
-            text = str(production_interval).strip()
-            if not text:
-                parsed_interval = None
-            else:
-                try:
-                    parsed_interval = int(text, 0)
-                except (TypeError, ValueError) as exc:
-                    raise ConfigurationError(
-                        "Production interval must be an integer in milliseconds."
-                    ) from exc
-                if parsed_interval < 0:
-                    raise ConfigurationError("Production interval cannot be negative.")
-
-        new_assembly = AssemblyDefinition(
-            assembly_id=parsed_id,
-            name=assembly_name,
-            direction=canonical_direction,
-            size_bits=parsed_size,
-            production_interval_ms=parsed_interval,
-            signals=[],
-        )
-
-        insert_index = len(configuration.assemblies)
-        normalized_position = (position or "end").strip().lower()
-        if normalized_position in {"before", "after"} and relative_assembly:
             try:
-                relative_id = int(str(relative_assembly), 0)
+                parsed_size = int(size_bits)
             except (TypeError, ValueError) as exc:
-                raise ConfigurationError("Relative assembly ID must be an integer.") from exc
-            relative_index = configuration.find_assembly_index(relative_id)
-            insert_index = relative_index
-            if normalized_position == "after":
-                insert_index += 1
-        elif normalized_position == "start":
-            insert_index = 0
+                raise ConfigurationError("Assembly size (bits) must be an integer.") from exc
+            if parsed_size < 0:
+                raise ConfigurationError("Assembly size (bits) cannot be negative.")
 
-        configuration.assemblies.insert(insert_index, new_assembly)
-        self._persist()
-        return new_assembly
+            new_assembly = AssemblyDefinition(
+                assembly_id=parsed_id,
+                name=assembly_name,
+                direction=canonical_direction,
+                size_bits=parsed_size,
+                signals=[],
+            )
+
+            insert_index = len(configuration.assemblies)
+            normalized_position = (position or "end").strip().lower()
+            if normalized_position in {"before", "after"} and relative_assembly:
+                try:
+                    relative_id = int(str(relative_assembly), 0)
+                except (TypeError, ValueError) as exc:
+                    raise ConfigurationError("Relative assembly ID must be an integer.") from exc
+                relative_index = configuration.find_assembly_index(relative_id)
+                insert_index = relative_index
+                if normalized_position == "after":
+                    insert_index += 1
+            elif normalized_position == "start":
+                insert_index = 0
+
+            configuration.assemblies.insert(insert_index, new_assembly)
+            self._persist()
+            return new_assembly
 
     def remove_assembly(self, name: str, assembly_id: int) -> None:
         """Remove an assembly from the configuration."""
