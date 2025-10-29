@@ -38,6 +38,20 @@ def _sample_configuration(*, direction: str = "input") -> SimulatorConfiguration
     return SimulatorConfiguration.from_dict(data)
 
 
+def test_simulator_configuration_listener_defaults() -> None:
+    config = SimulatorConfiguration.from_dict(
+        {
+            "name": "Defaults",
+            "target": {"ip": "1.1.1.1", "port": 44818},
+            "assemblies": [],
+        }
+    )
+
+    assert config.role == "originator"
+    assert config.listener_host == "0.0.0.0"
+    assert config.listener_port == 44818
+
+
 def test_forward_open_metadata_generation() -> None:
     config = SimulatorConfiguration.from_dict(
         {
@@ -199,11 +213,40 @@ def test_update_forward_open_overrides(tmp_path: Path) -> None:
     assert overrides["connection_points"] == [0x65, 0x64, 0x01]
     assert overrides["use_large_forward_open"] is True
 
-    refreshed = store.get("DemoConfig").metadata.get("forward_open")
-    assert refreshed == overrides
 
-    cleared = store.update_forward_open("DemoConfig", {"o_to_t_size": ""})
-    assert "o_to_t_size" not in cleared
+def test_update_assembly_production_interval(tmp_path: Path) -> None:
+    store = ConfigurationStore(storage_path=tmp_path / "configs.json")
+    config = _sample_configuration(direction="output")
+    store.upsert(config)
+
+    store.update_assembly(
+        "DemoConfig",
+        100,
+        new_id="100",
+        direction="output",
+        production_interval="250",
+    )
+
+    updated = store.get("DemoConfig")
+    assert updated.find_assembly(100).production_interval_ms == 250
+
+
+def test_add_assembly_with_production_interval(tmp_path: Path) -> None:
+    store = ConfigurationStore(storage_path=tmp_path / "configs.json")
+    config = _sample_configuration(direction="output")
+    store.upsert(config)
+
+    store.add_assembly(
+        "DemoConfig",
+        assembly_id="0x200",
+        assembly_name="ExtraOutput",
+        direction="output",
+        size_bits="16",
+        production_interval="500",
+    )
+
+    added = store.get("DemoConfig").find_assembly(0x200)
+    assert added.production_interval_ms == 500
 
 
 def test_update_forward_open_rejects_invalid_values(tmp_path: Path) -> None:

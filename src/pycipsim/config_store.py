@@ -13,6 +13,7 @@ from .configuration import (
     SimulatorConfiguration,
     SignalDefinition,
     normalize_runtime_mode,
+    normalize_role,
     parse_allowed_hosts,
     validate_signal_type,
 )
@@ -143,6 +144,10 @@ class ConfigurationStore:
         runtime_mode: Optional[str],
         allowed_hosts: Optional[str] = None,
         allow_external: Optional[bool] = None,
+        role: Optional[str] = None,
+        listener_host: Optional[str] = None,
+        listener_port: Optional[str] = None,
+        listener_interface: Optional[str] = None,
     ) -> SimulatorConfiguration:
         with self._lock:
             configuration = self.get(name)
@@ -165,6 +170,24 @@ class ConfigurationStore:
                 configuration.allowed_hosts = parse_allowed_hosts(allowed_hosts)
             if allow_external is not None:
                 configuration.allow_external = bool(allow_external)
+            if role is not None:
+                configuration.role = normalize_role(role)
+            if listener_host is not None:
+                configuration.listener_host = listener_host.strip() or "0.0.0.0"
+            if listener_port is not None:
+                text = listener_port.strip()
+                if text:
+                    try:
+                        parsed_listener_port = int(text, 0)
+                    except (TypeError, ValueError) as exc:
+                        raise ConfigurationError("Listener port must be an integer.") from exc
+                    if not (0 <= parsed_listener_port < 65536):
+                        raise ConfigurationError(
+                            "Listener port must be between 0 and 65535."
+                        )
+                    configuration.listener_port = parsed_listener_port
+            if listener_interface is not None:
+                configuration.listener_interface = listener_interface or None
             self._persist()
             return configuration
 
@@ -369,6 +392,7 @@ class ConfigurationStore:
         new_id: str,
         direction: str,
         size_bits: Optional[str] = None,
+        production_interval: Optional[str] = None,
     ) -> AssemblyDefinition:
         with self._lock:
             configuration = self.get(name)
@@ -377,6 +401,7 @@ class ConfigurationStore:
             original_id = assembly.assembly_id
             original_direction = assembly.direction
             original_size = assembly.size_bits
+            original_interval = assembly.production_interval_ms
             try:
                 try:
                     parsed_id = int(str(new_id), 0)
@@ -411,15 +436,34 @@ class ConfigurationStore:
                         raise ConfigurationError(
                             "Assembly size (bits) cannot be negative."
                         )
+                if production_interval is None:
+                    parsed_interval = assembly.production_interval_ms
+                else:
+                    text = str(production_interval).strip()
+                    if not text:
+                        parsed_interval = None
+                    else:
+                        try:
+                            parsed_interval = int(text, 0)
+                        except (TypeError, ValueError) as exc:
+                            raise ConfigurationError(
+                                "Production interval must be an integer in milliseconds."
+                            ) from exc
+                        if parsed_interval < 0:
+                            raise ConfigurationError(
+                                "Production interval cannot be negative."
+                            )
                 assembly.assembly_id = parsed_id
                 assembly.direction = canonical_direction
                 assembly.size_bits = parsed_size
+                assembly.production_interval_ms = parsed_interval
                 assembly.rebuild_padding()
             except Exception:
                 assembly.signals = original_signals
                 assembly.assembly_id = original_id
                 assembly.direction = original_direction
                 assembly.size_bits = original_size
+                assembly.production_interval_ms = original_interval
                 raise
             self._persist()
             return assembly
@@ -434,6 +478,7 @@ class ConfigurationStore:
         size_bits: str,
         position: str = "end",
         relative_assembly: Optional[str] = None,
+        production_interval: Optional[str] = None,
     ) -> AssemblyDefinition:
         """Insert a new assembly into the configuration."""
 
@@ -463,38 +508,55 @@ class ConfigurationStore:
             else:
                 raise ConfigurationError("Assembly direction must be either 'input' or 'output'.")
 
-            try:
-                parsed_size = int(size_bits)
-            except (TypeError, ValueError) as exc:
-                raise ConfigurationError("Assembly size (bits) must be an integer.") from exc
-            if parsed_size < 0:
-                raise ConfigurationError("Assembly size (bits) cannot be negative.")
+        try:
+            parsed_size = int(size_bits)
+        except (TypeError, ValueError) as exc:
+            raise ConfigurationError("Assembly size (bits) must be an integer.") from exc
+        if parsed_size < 0:
+            raise ConfigurationError("Assembly size (bits) cannot be negative.")
 
-            new_assembly = AssemblyDefinition(
-                assembly_id=parsed_id,
-                name=assembly_name,
-                direction=canonical_direction,
-                size_bits=parsed_size,
-                signals=[],
-            )
-
-            insert_index = len(configuration.assemblies)
-            normalized_position = (position or "end").strip().lower()
-            if normalized_position in {"before", "after"} and relative_assembly:
+        if production_interval is None:
+            parsed_interval = None
+        else:
+            text = str(production_interval).strip()
+            if not text:
+                parsed_interval = None
+            else:
                 try:
-                    relative_id = int(str(relative_assembly), 0)
+                    parsed_interval = int(text, 0)
                 except (TypeError, ValueError) as exc:
-                    raise ConfigurationError("Relative assembly ID must be an integer.") from exc
-                relative_index = configuration.find_assembly_index(relative_id)
-                insert_index = relative_index
-                if normalized_position == "after":
-                    insert_index += 1
-            elif normalized_position == "start":
-                insert_index = 0
+                    raise ConfigurationError(
+                        "Production interval must be an integer in milliseconds."
+                    ) from exc
+                if parsed_interval < 0:
+                    raise ConfigurationError("Production interval cannot be negative.")
 
-            configuration.assemblies.insert(insert_index, new_assembly)
-            self._persist()
-            return new_assembly
+        new_assembly = AssemblyDefinition(
+            assembly_id=parsed_id,
+            name=assembly_name,
+            direction=canonical_direction,
+            size_bits=parsed_size,
+            production_interval_ms=parsed_interval,
+            signals=[],
+        )
+
+        insert_index = len(configuration.assemblies)
+        normalized_position = (position or "end").strip().lower()
+        if normalized_position in {"before", "after"} and relative_assembly:
+            try:
+                relative_id = int(str(relative_assembly), 0)
+            except (TypeError, ValueError) as exc:
+                raise ConfigurationError("Relative assembly ID must be an integer.") from exc
+            relative_index = configuration.find_assembly_index(relative_id)
+            insert_index = relative_index
+            if normalized_position == "after":
+                insert_index += 1
+        elif normalized_position == "start":
+            insert_index = 0
+
+        configuration.assemblies.insert(insert_index, new_assembly)
+        self._persist()
+        return new_assembly
 
     def remove_assembly(self, name: str, assembly_id: int) -> None:
         """Remove an assembly from the configuration."""

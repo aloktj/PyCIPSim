@@ -1,6 +1,7 @@
 """FastAPI application exposing the web configuration UI."""
 from __future__ import annotations
 
+import contextlib
 import json
 import socket
 import threading
@@ -20,9 +21,9 @@ from ..config_store import (
     ConfigurationStore,
     SimulatorConfiguration,
 )
-from ..configuration import CIP_SIGNAL_TYPES
+from ..configuration import CIP_SIGNAL_TYPES, SIMULATOR_ROLES
 from ..handshake import HandshakePhase, HandshakeResult, perform_handshake
-from ..runtime import CIPIORuntime
+from ..runtime import AssemblyHost, CIPIORuntime, ConnectionManager, ENIPServer
 from ..session import CIPSession, SessionConfig
 
 
@@ -34,6 +35,10 @@ class ActiveSimulation:
     handshake: HandshakeResult
     started_at: datetime
     runtime: Optional[CIPIORuntime]
+    role: str = "originator"
+    assembly_host: Optional[AssemblyHost] = None
+    server: Optional[ENIPServer] = None
+    store: Optional[ConfigurationStore] = None
 
 
 class SimulatorManager:
@@ -65,6 +70,56 @@ class SimulatorManager:
         with self._lock:
             if self._active is not None:
                 raise RuntimeError("A simulation is already running. Stop it before starting a new one.")
+            role = (config.role or "originator").lower()
+            if role == "target":
+                cycle_interval = max(self._cycle_interval, config.default_production_interval_seconds())
+                host = AssemblyHost(config.assemblies, cycle_interval=cycle_interval)
+
+                def _on_input(assembly_id: int, values: Dict[str, object]) -> None:
+                    for signal_name, signal_value in values.items():
+                        if signal_value is None:
+                            continue
+                        with contextlib.suppress(Exception):
+                            store.update_signal_value(
+                                config.name, assembly_id, signal_name, str(signal_value)
+                            )
+
+                host.set_input_callback(_on_input)
+                for assembly in config.assemblies:
+                    direction = (assembly.direction or "").lower()
+                    if direction not in {"output", "out"}:
+                        continue
+                    host.register_producer(
+                        assembly.assembly_id,
+                        self._build_store_producer(store, config.name, assembly.assembly_id),
+                    )
+                self._sync_host_outputs(host, config)
+                server = ENIPServer(
+                    host=config.listener_host or "0.0.0.0",
+                    tcp_port=config.listener_port,
+                    udp_port=config.listener_port,
+                    connection_manager=ConnectionManager(),
+                    reaper_interval=max(cycle_interval, 0.5),
+                    assembly_host=host,
+                )
+                try:
+                    server.start()
+                except Exception:
+                    server.stop()
+                    raise
+                handshake = HandshakeResult(success=True, steps=[], duration_ms=0.0)
+                self._active = ActiveSimulation(
+                    configuration_name=config.name,
+                    handshake=handshake,
+                    started_at=datetime.now(timezone.utc),
+                    runtime=None,
+                    role="target",
+                    assembly_host=host,
+                    server=server,
+                    store=store,
+                )
+                self._last_handshake = (config.name, handshake)
+                return handshake
             session_metadata = dict(config.metadata)
             max_connection_size = config.max_connection_size_bytes()
             if max_connection_size > 0:
@@ -119,17 +174,23 @@ class SimulatorManager:
                 handshake=handshake,
                 started_at=datetime.now(timezone.utc),
                 runtime=runtime,
+                role=role,
+                store=store,
             )
             return handshake
 
     def stop(self) -> None:
         runtime: Optional[CIPIORuntime] = None
+        server: Optional[ENIPServer] = None
         with self._lock:
             if self._active is not None:
                 runtime = self._active.runtime
+                server = self._active.server
             self._active = None
         if runtime is not None:
             runtime.stop()
+        if server is not None:
+            server.stop()
 
     def active(self) -> Optional[ActiveSimulation]:
         with self._lock:
@@ -154,6 +215,70 @@ class SimulatorManager:
         if active and active.configuration_name == config_name:
             if active.runtime is not None:
                 active.runtime.notify_output_update()
+            if active.assembly_host is not None and active.store is not None:
+                with contextlib.suppress(ConfigurationNotFoundError):
+                    configuration = active.store.get(config_name)
+                    self._sync_host_outputs(active.assembly_host, configuration)
+
+    def active_connections(self) -> List[Dict[str, object]]:
+        active = self.active()
+        if not active or active.server is None:
+            return []
+        connections = active.server.connection_manager.active_connections()
+        snapshot: List[Dict[str, object]] = []
+        for connection in connections:
+            snapshot.append(
+                {
+                    "session_handle": connection.session_handle,
+                    "o_to_t_connection_id": connection.o_to_t_connection_id,
+                    "t_to_o_connection_id": connection.t_to_o_connection_id,
+                    "connection_serial": connection.connection_serial,
+                    "vendor_id": connection.vendor_id,
+                    "originator_serial": connection.originator_serial,
+                    "timeout_seconds": connection.timeout_seconds,
+                    "o_to_t_rpi": connection.o_to_t_rpi,
+                    "t_to_o_rpi": connection.t_to_o_rpi,
+                    "connection_points": list(connection.connection_points),
+                    "created_at": connection.created_at,
+                    "last_activity": connection.last_activity,
+                }
+            )
+        return snapshot
+
+    def _build_store_producer(
+        self,
+        store: ConfigurationStore,
+        config_name: str,
+        assembly_id: int,
+    ) -> Callable[["AssemblyDefinition"], Optional[Dict[str, object]]]:
+        def _producer(_assembly: "AssemblyDefinition") -> Optional[Dict[str, object]]:
+            with contextlib.suppress(ConfigurationNotFoundError, ConfigurationError):
+                configuration = store.get(config_name)
+                assembly = configuration.find_assembly(assembly_id)
+                values: Dict[str, object] = {}
+                for signal in assembly.signals:
+                    if signal.is_padding or signal.value is None:
+                        continue
+                    values[signal.name] = signal.value
+                return values
+            return None
+
+        return _producer
+
+    def _sync_host_outputs(
+        self, host: AssemblyHost, configuration: SimulatorConfiguration
+    ) -> None:
+        for assembly in configuration.assemblies:
+            direction = (assembly.direction or "").lower()
+            if direction not in {"output", "out"}:
+                continue
+            values: Dict[str, object] = {}
+            for signal in assembly.signals:
+                if signal.is_padding or signal.value is None:
+                    continue
+                values[signal.name] = signal.value
+            if values:
+                host.update_assembly_values(assembly.assembly_id, values)
 
 
 def _templates() -> Jinja2Templates:
@@ -277,6 +402,8 @@ def get_app(
                 "handshake_labels": {phase.value: label for phase, label in _HANDSHAKE_LABELS.items()},
                 "forward_open_effective": forward_open_effective,
                 "forward_open_overrides": forward_open_overrides,
+                "simulator_roles": SIMULATOR_ROLES,
+                "active_connections": manager.active_connections(),
                 "message": message,
                 "error": error,
             },
@@ -307,10 +434,17 @@ def get_app(
             return redirect("/", error=str(exc))
         if not handshake.success:
             return redirect("/", error=_format_handshake_failure(handshake))
-        return redirect(
-            "/",
-            message=f"Simulator started for {name}. Handshake duration {handshake.duration_ms:.2f}ms.",
-        )
+        active_instance = manager.active()
+        if config.role == "target" and active_instance and active_instance.server is not None:
+            port = active_instance.server.tcp_port
+            message = (
+                f"Target simulator started for {name} on {config.listener_host}:{port}."
+            )
+        else:
+            message = (
+                f"Simulator started for {name}. Handshake duration {handshake.duration_ms:.2f}ms."
+            )
+        return redirect("/", message=message)
 
     @app.post("/stop")
     async def stop_simulator() -> RedirectResponse:
@@ -355,6 +489,10 @@ def get_app(
         runtime_mode: Optional[str] = Form(None),
         allowed_hosts: Optional[str] = Form(None),
         allow_external: Optional[str] = Form(None),
+        role: Optional[str] = Form(None),
+        listener_host: Optional[str] = Form(None),
+        listener_port: Optional[str] = Form(None),
+        listener_interface: Optional[str] = Form(None),
     ) -> RedirectResponse:
         try:
             manager.ensure_config_mutable(name)
@@ -369,6 +507,10 @@ def get_app(
                 runtime_mode=runtime_mode,
                 allowed_hosts=allowed_hosts,
                 allow_external=allow_external_flag,
+                role=role,
+                listener_host=listener_host,
+                listener_port=listener_port,
+                listener_interface=listener_interface,
             )
         except RuntimeError as exc:
             return redirect("/", error=str(exc))
@@ -426,6 +568,7 @@ def get_app(
         new_id: str = Form(...),
         direction: str = Form(...),
         size_bits: str = Form(...),
+        production_interval: Optional[str] = Form(None),
     ) -> RedirectResponse:
         try:
             manager.ensure_config_mutable(name)
@@ -435,6 +578,7 @@ def get_app(
                 new_id=new_id,
                 direction=direction,
                 size_bits=size_bits,
+                production_interval=production_interval,
             )
         except RuntimeError as exc:
             return redirect("/", error=str(exc))
@@ -454,6 +598,7 @@ def get_app(
         size_bits: str = Form(...),
         position: str = Form("end"),
         relative_assembly: Optional[str] = Form(None),
+        production_interval: Optional[str] = Form(None),
     ) -> RedirectResponse:
         try:
             manager.ensure_config_mutable(name)
@@ -465,6 +610,7 @@ def get_app(
                 size_bits=size_bits,
                 position=position,
                 relative_assembly=relative_assembly or None,
+                production_interval=production_interval,
             )
         except RuntimeError as exc:
             return redirect("/", error=str(exc))

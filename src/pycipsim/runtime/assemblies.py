@@ -60,6 +60,7 @@ class AssemblyHost:
         configuration: Iterable[AssemblyDefinition],
         *,
         cycle_interval: float = 0.1,
+        input_callback: Optional[Callable[[int, Dict[str, object]], None]] = None,
     ) -> None:
         self._cycle_interval = max(cycle_interval, 0.01)
         self._assemblies: Dict[int, AssemblyDefinition] = {
@@ -70,6 +71,7 @@ class AssemblyHost:
         self._contexts: Dict[int, _ConnectionContext] = {}
         self._by_connection_id: Dict[int, _ConnectionContext] = {}
         self._lock = threading.RLock()
+        self._input_callback = input_callback
 
     # ------------------------------------------------------------------
     # Producer registration
@@ -81,6 +83,14 @@ class AssemblyHost:
             if assembly_id not in self._assemblies:
                 raise KeyError(f"Unknown assembly {assembly_id}")
             self._producers.setdefault(assembly_id, []).append(producer)
+
+    def set_input_callback(
+        self, callback: Optional[Callable[[int, Dict[str, object]], None]]
+    ) -> None:
+        """Register a callback invoked when O→T payloads are decoded."""
+
+        with self._lock:
+            self._input_callback = callback
 
     # ------------------------------------------------------------------
     # Connection lifecycle
@@ -179,6 +189,16 @@ class AssemblyHost:
             for signal in assembly.signals:
                 if signal.name in decoded:
                     signal.value = decoded[signal.name]
+        callback = self._input_callback
+        if callback is not None:
+            try:
+                callback(context.o_to_t_assembly, dict(decoded))
+            except Exception as exc:  # pragma: no cover - defensive
+                _LOGGER.error(
+                    "Input callback for assembly %s failed: %s",
+                    context.o_to_t_assembly,
+                    exc,
+                )
 
     def build_t_to_o_payload(self, connection_id: int) -> bytes:
         """Return the last generated target-to-originator payload."""
