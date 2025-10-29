@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import contextlib
 import copy
+import ipaddress
 import logging
 import os
 import socket
@@ -10,7 +11,19 @@ import struct
 import threading
 import time
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, Iterable, List, Optional, Protocol, Sequence, Tuple
+from typing import (
+    Any,
+    Callable,
+    Dict,
+    Iterable,
+    List,
+    Optional,
+    Protocol,
+    Sequence,
+    Set,
+    Tuple,
+    Union,
+)
 
 from .cip import describe_error, resolve_service_code
 from .device import DeviceProfile, ServiceRequest, ServiceResponse
@@ -26,6 +39,9 @@ from .target_protocol import (
 )
 
 _LOGGER = logging.getLogger(__name__)
+
+_Address = Union[ipaddress.IPv4Address, ipaddress.IPv6Address]
+_Network = Union[ipaddress.IPv4Network, ipaddress.IPv6Network]
 
 
 def _find_interface_ipv4(interface: str) -> Optional[str]:
@@ -664,12 +680,83 @@ class CIPSession:
                 self._transport = PyComm3Transport(self.config)
         return self._transport
 
+    def _reverse_lookup(self, ip: _Address) -> List[str]:
+        hostnames: List[str] = []
+        try:
+            primary, aliases, _ = socket.gethostbyaddr(str(ip))
+        except (socket.herror, socket.gaierror, OSError):
+            return hostnames
+        for name in (primary, *aliases):
+            if not name:
+                continue
+            lowered = name.lower()
+            if lowered not in hostnames:
+                hostnames.append(lowered)
+        return hostnames
+
+    def _expand_host_tokens(self, host: str) -> List[str]:
+        tokens: List[str] = []
+        try:
+            value = str(host).strip()
+        except Exception:  # pragma: no cover - defensive
+            return tokens
+        if not value:
+            return tokens
+        lowered = value.lower()
+        if lowered not in tokens:
+            tokens.append(lowered)
+        try:
+            ip_obj = ipaddress.ip_address(value)
+        except ValueError:
+            try:
+                network = ipaddress.ip_network(value, strict=False)
+            except ValueError:
+                try:
+                    infos = socket.getaddrinfo(value, None)
+                except (socket.gaierror, UnicodeError):
+                    return tokens
+                seen_ips: Set[str] = set()
+                for _, _, _, _, sockaddr in infos:
+                    if not sockaddr:
+                        continue
+                    address = sockaddr[0]
+                    try:
+                        ip_candidate = ipaddress.ip_address(address)
+                    except ValueError:
+                        continue
+                    ip_text = str(ip_candidate)
+                    if ip_text not in seen_ips:
+                        seen_ips.add(ip_text)
+                        tokens.append(ip_text)
+                        for hostname in self._reverse_lookup(ip_candidate):
+                            if hostname not in tokens:
+                                tokens.append(hostname)
+                return tokens
+            canonical = str(network)
+            if canonical not in tokens:
+                tokens.append(canonical)
+            return tokens
+        ip_text = str(ip_obj)
+        if ip_text not in tokens:
+            tokens.append(ip_text)
+        for hostname in self._reverse_lookup(ip_obj):
+            if hostname not in tokens:
+                tokens.append(hostname)
+        return tokens
+
     def _resolve_allowed_hosts(self) -> Iterable[str]:
         hosts: List[str] = list(self.config.allowed_hosts)
         env_hosts = os.getenv("PYCIPSIM_ALLOWED_HOSTS")
         if env_hosts:
             hosts.extend(h.strip() for h in env_hosts.split(",") if h.strip())
-        return hosts
+        normalized: List[str] = []
+        seen: Set[str] = set()
+        for host in hosts:
+            for token in self._expand_host_tokens(host):
+                if token not in seen:
+                    seen.add(token)
+                    normalized.append(token)
+        return normalized
 
     def _validate_target(self) -> None:
         if self._profile is not None:
@@ -680,13 +767,37 @@ class CIPSession:
                 self.config.ip_address,
             )
             return
-        allowed_hosts = set(self._resolve_allowed_hosts())
-        if self.config.ip_address not in allowed_hosts:
-            raise TransportError(
-                "Target host '%s' is not in the allowed hosts list. Set allow_external to True "
-                "or update allowed_hosts to proceed."
-                % self.config.ip_address
-            )
+        allowed_hosts = list(self._resolve_allowed_hosts())
+        networks: List[_Network] = []
+        direct_hosts: Set[str] = set()
+        for host in allowed_hosts:
+            try:
+                network = ipaddress.ip_network(host, strict=False)
+            except ValueError:
+                direct_hosts.add(host)
+            else:
+                networks.append(network)
+
+        target_tokens = set(self._expand_host_tokens(self.config.ip_address))
+        if direct_hosts.intersection(target_tokens):
+            return
+
+        target_ips: Set[_Address] = set()
+        for token in target_tokens:
+            try:
+                target_ips.add(ipaddress.ip_address(token))
+            except ValueError:
+                continue
+
+        for ip_obj in target_ips:
+            if any(ip_obj in network for network in networks):
+                return
+
+        raise TransportError(
+            "Target host '%s' is not in the allowed hosts list. Set allow_external to True "
+            "or update allowed_hosts to proceed."
+            % self.config.ip_address
+        )
 
     @contextlib.contextmanager
     def lifecycle(self) -> "CIPSession":
