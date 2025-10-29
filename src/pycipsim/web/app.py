@@ -6,10 +6,10 @@ import json
 import logging
 import socket
 import threading
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 from urllib.parse import urlencode
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
@@ -43,30 +43,51 @@ class ActiveSimulation:
     runtime: Optional[Any]
 
 
+@dataclass(frozen=True)
+class LogEntry:
+    """Captured log record for display or API streaming."""
+
+    id: int
+    level: str
+    text: str
+
+
 class LogBufferHandler(logging.Handler):
     """Capture application log messages for display in the web UI."""
 
     def __init__(self) -> None:
         super().__init__()
         self._lock = threading.RLock()
-        self._entries: list[tuple[str, str]] = []
+        self._entries: list[LogEntry] = []
+        self._next_id = 1
 
     def emit(self, record: logging.LogRecord) -> None:  # pragma: no cover - exercised indirectly
         try:
             message = self.format(record)
         except Exception:  # pragma: no cover - defensive
             message = record.getMessage()
-        entry = (record.levelname, message)
+        entry = LogEntry(id=self._next_id, level=record.levelname, text=message)
         with self._lock:
             self._entries.append(entry)
+            self._next_id += 1
 
-    def entries(self) -> list[tuple[str, str]]:
+    def entries(self) -> list[LogEntry]:
         with self._lock:
             return list(self._entries)
 
     def clear(self) -> None:
         with self._lock:
             self._entries.clear()
+            self._next_id = 1
+
+    def entries_since(self, last_id: Optional[int]) -> Tuple[list[LogEntry], Optional[int]]:
+        with self._lock:
+            if last_id is None:
+                subset = list(self._entries)
+            else:
+                subset = [entry for entry in self._entries if entry.id > last_id]
+            next_last = self._entries[-1].id if self._entries else last_id
+        return subset, next_last
 
 
 _LOG_HANDLER: Optional[LogBufferHandler] = None
@@ -357,10 +378,8 @@ def get_app(
                 last_handshake = manager.last_handshake()
                 if last_handshake and last_handshake[0] == current.name:
                     handshake_result = last_handshake[1]
-        log_entries = [
-            {"level": level, "text": text}
-            for level, text in log_handler.entries()
-        ]
+        log_entries = log_handler.entries()
+        last_log_id = log_entries[-1].id if log_entries else None
 
         return templates.TemplateResponse(
             request,
@@ -377,8 +396,17 @@ def get_app(
                 "message": message,
                 "error": error,
                 "log_entries": log_entries,
+                "last_log_id": last_log_id,
             },
         )
+
+    @app.get("/logs")
+    async def stream_logs(since: Optional[int] = None) -> Dict[str, Any]:
+        entries, last_id = log_handler.entries_since(since)
+        return {
+            "entries": [asdict(entry) for entry in entries],
+            "last_id": last_id,
+        }
 
     @app.post("/configs/upload")
     async def upload_config(file: UploadFile = File(...)) -> RedirectResponse:

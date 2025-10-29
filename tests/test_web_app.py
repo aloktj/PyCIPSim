@@ -222,6 +222,45 @@ def test_index_renders_log_entries(
     assert "Application Logs" in response.text
     assert "UI log sentinel message" in response.text
 
+
+def test_log_stream_endpoint_returns_incremental_entries(
+    store: ConfigurationStore, manager: SimulatorManager
+) -> None:
+    handler = get_log_buffer_handler()
+    handler.clear()
+    app = get_app(store=store, manager=manager)
+    client = TestClient(app)
+
+    logging.getLogger("pycipsim.tests.ui").info("Log stream entry one")
+
+    first = client.get("/logs")
+    assert first.status_code == 200
+    first_payload = first.json()
+    assert isinstance(first_payload.get("last_id"), int)
+    assert any(
+        "Log stream entry one" in entry.get("text", "")
+        for entry in first_payload.get("entries", [])
+        if isinstance(entry, dict)
+    )
+
+    last_id = first_payload["last_id"]
+    logging.getLogger("pycipsim.tests.ui").warning("Log stream entry two")
+
+    second = client.get(f"/logs?since={last_id}")
+    assert second.status_code == 200
+    second_payload = second.json()
+    assert second_payload.get("entries")
+    assert any(
+        "Log stream entry two" in entry.get("text", "")
+        for entry in second_payload.get("entries", [])
+        if isinstance(entry, dict)
+    )
+    assert all(
+        "Log stream entry one" not in entry.get("text", "")
+        for entry in second_payload.get("entries", [])
+        if isinstance(entry, dict)
+    )
+
 def test_live_handshake_failure_displays_steps(
     store: ConfigurationStore,
     manager: SimulatorManager,

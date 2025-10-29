@@ -23,8 +23,8 @@
         align-items: start;
       }
       .main-grid {
-        display: grid;
-        grid-template-columns: 1fr 1fr;
+        display: flex;
+        flex-direction: column;
         gap: 2rem;
       }
       .config-list ul { list-style: none; padding: 0; }
@@ -179,7 +179,7 @@
       @media (max-width: 1100px) {
         body { margin: 1rem; }
         .main-layout { grid-template-columns: 1fr; }
-        .main-grid { grid-template-columns: 1fr; }
+        .main-grid { flex-direction: column; }
         .log-panel { position: static; max-height: 50vh; }
       }
     </style>
@@ -207,7 +207,7 @@
     {% endif %}
 
     <div class="main-layout">
-      <aside class="log-panel" id="log-panel">
+      <aside class="log-panel" id="log-panel" data-last-log-id="{{ last_log_id or '' }}">
         <div class="log-panel-header">
           <h2>Application Logs</h2>
           <div class="log-actions">
@@ -221,7 +221,7 @@
               <pre class="log-entry log-level-{{ entry.level | lower }}">{{ entry.text }}</pre>
             {% endfor %}
           {% else %}
-            <div class="log-empty">No log messages yet.</div>
+            <div class="log-empty" id="log-empty">No log messages yet.</div>
           {% endif %}
         </div>
         <p class="log-hint">Latest messages appear at the bottom. Scroll to review earlier events.</p>
@@ -663,9 +663,34 @@
         const logOutput = document.getElementById("log-output");
         const expand = document.getElementById("log-expand");
         const collapse = document.getElementById("log-collapse");
+        const emptyState = document.getElementById("log-empty");
+
+        let lastLogId = 0;
+        if (logPanel) {
+          const rawLastId = logPanel.dataset.lastLogId;
+          const parsed = rawLastId ? Number(rawLastId) : NaN;
+          if (!Number.isNaN(parsed)) {
+            lastLogId = parsed;
+          }
+        }
+
+        function maintainScroll(force) {
+          if (!logOutput) {
+            return;
+          }
+          if (force) {
+            logOutput.scrollTop = logOutput.scrollHeight;
+            return;
+          }
+          const distanceToBottom =
+            logOutput.scrollHeight - logOutput.scrollTop - logOutput.clientHeight;
+          if (distanceToBottom < 16) {
+            logOutput.scrollTop = logOutput.scrollHeight;
+          }
+        }
 
         if (logOutput) {
-          logOutput.scrollTop = logOutput.scrollHeight;
+          maintainScroll(true);
         }
 
         function exitFullScreen() {
@@ -702,6 +727,65 @@
             exitFullScreen();
           }
         });
+
+        async function fetchLogs() {
+          if (!logOutput) {
+            return;
+          }
+
+          const shouldStick =
+            logOutput.scrollHeight - logOutput.scrollTop - logOutput.clientHeight < 16;
+          try {
+            const target = lastLogId ? `/logs?since=${encodeURIComponent(lastLogId)}` : "/logs";
+            const response = await fetch(target, { cache: "no-store" });
+            if (!response.ok) {
+              return;
+            }
+            const payload = await response.json();
+            const entries = Array.isArray(payload.entries) ? payload.entries : [];
+            if (entries.length) {
+              if (emptyState && emptyState.parentNode) {
+                emptyState.parentNode.removeChild(emptyState);
+              }
+              for (const entry of entries) {
+                if (!entry || typeof entry !== "object") {
+                  continue;
+                }
+                const item = document.createElement("pre");
+                const level = typeof entry.level === "string" ? entry.level.toLowerCase() : "";
+                item.className = `log-entry log-level-${level}`;
+                item.textContent = typeof entry.text === "string" ? entry.text : "";
+                logOutput.appendChild(item);
+              }
+              const lastEntry = entries[entries.length - 1];
+              if (lastEntry && typeof lastEntry.id === "number") {
+                lastLogId = lastEntry.id;
+                if (logPanel) {
+                  logPanel.dataset.lastLogId = String(lastLogId);
+                }
+              }
+              if (shouldStick) {
+                maintainScroll(true);
+              }
+              return;
+            }
+            if (typeof payload.last_id === "number" && payload.last_id > lastLogId) {
+              lastLogId = payload.last_id;
+              if (logPanel) {
+                logPanel.dataset.lastLogId = String(lastLogId);
+              }
+              if (shouldStick) {
+                maintainScroll(true);
+              }
+            }
+          } catch (err) {
+            /* Network hiccups are tolerated silently */
+          }
+        }
+
+        if (logOutput) {
+          window.setInterval(fetchLogs, 3000);
+        }
       })();
     </script>
   </body>
