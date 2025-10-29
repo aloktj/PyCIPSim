@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import json
 import logging
+import tempfile
+import time
 from pathlib import Path
 from typing import Dict, Optional
 
@@ -10,6 +12,8 @@ import click
 from rich.console import Console
 from rich.table import Table
 
+from .config_store import ConfigurationStore
+from .configuration import SimulatorConfiguration, normalize_role, normalize_transport_mode
 from .device import DeviceProfile, ServiceRequest, ServiceResponse, make_default_profiles
 from .engine import (
     BenchmarkResult,
@@ -21,7 +25,9 @@ from .engine import (
     run_scenarios_parallel,
 )
 from .logging_config import configure_logging
+from .runtime import CIPIORuntime
 from .session import CIPSession, SessionConfig, TransportError
+from .target import CIPTargetRuntime
 
 console = Console()
 
@@ -155,6 +161,107 @@ def run(
         raise click.Abort()
 
     _render_multi_results(results)
+
+
+@cli.command()
+@click.option(
+    "--config-file",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    required=True,
+    help="Simulator configuration JSON file.",
+)
+@click.option(
+    "--cycle-interval",
+    default=0.1,
+    show_default=True,
+    type=float,
+    help="Loop interval for cyclic updates (seconds).",
+)
+@click.option(
+    "--role",
+    type=click.Choice(["originator", "target"]),
+    help="Override the role defined in the configuration file.",
+)
+@click.option(
+    "--transport",
+    type=click.Choice(["pycomm3", "pycipsim"]),
+    help="Override the transport mode for originator sessions.",
+)
+def runtime(
+    config_file: Path,
+    cycle_interval: float,
+    role: Optional[str],
+    transport: Optional[str],
+) -> None:
+    """Start a live runtime based on a saved simulator configuration."""
+
+    config = _load_simulator_config(config_file)
+    if role:
+        config.role = normalize_role(role)
+    if transport:
+        config.transport = normalize_transport_mode(transport)
+    tmp_store_path = Path(tempfile.mkdtemp(prefix="pycipsim-cli-")) / "config.json"
+    store = ConfigurationStore(storage_path=tmp_store_path)
+    store.upsert(config)
+    if config.role == "target":
+        runtime = CIPTargetRuntime(config, store, cycle_interval=cycle_interval)
+        runtime.start()
+        console.print(
+            f"[green]Target runtime listening on {config.target_ip}:{config.target_port}. Press CTRL+C to stop.[/green]"
+        )
+        try:
+            while True:
+                time.sleep(1.0)
+        except KeyboardInterrupt:
+            console.print("Stopping target runtime...")
+        finally:
+            runtime.stop()
+        return
+
+    session_metadata = dict(config.metadata)
+    max_connection_size = config.max_connection_size_bytes()
+    if max_connection_size > 0:
+        session_metadata["max_connection_size_bytes"] = max_connection_size
+    forward_open = config.build_forward_open_metadata()
+    if forward_open:
+        session_metadata["forward_open"] = forward_open
+    allowed_hosts = list(SessionConfig().allowed_hosts)
+    allowed_hosts.extend(config.allowed_hosts)
+    allowed_hosts.append(config.target_ip)
+    deduped_hosts: list[str] = []
+    seen_hosts: set[str] = set()
+    for host in allowed_hosts:
+        if not host or host in seen_hosts:
+            continue
+        deduped_hosts.append(host)
+        seen_hosts.add(host)
+    session_config = SessionConfig(
+        ip_address=config.target_ip,
+        port=config.target_port,
+        network_interface=config.network_interface,
+        metadata=session_metadata,
+        allowed_hosts=tuple(deduped_hosts),
+        allow_external=config.allow_external,
+        transport=config.transport,
+    )
+    session = CIPSession(session_config)
+    runtime = CIPIORuntime(
+        configuration=config,
+        store=store,
+        session=session,
+        cycle_interval=cycle_interval,
+    )
+    runtime.start()
+    console.print(
+        f"[green]Originator runtime connected to {config.target_ip}:{config.target_port}. Press CTRL+C to stop.[/green]"
+    )
+    try:
+        while True:
+            time.sleep(1.0)
+    except KeyboardInterrupt:
+        console.print("Stopping originator runtime...")
+    finally:
+        runtime.stop()
 
 
 @cli.command()
@@ -431,6 +538,16 @@ def _render_multi_results(results: Dict[str, SimulationResult]) -> None:
         for status, count in sorted(status_counts.items()):
             status_table.add_row(status, str(count))
         console.print(status_table)
+
+
+def _load_simulator_config(path: Path) -> SimulatorConfiguration:
+    try:
+        payload = json.loads(path.read_text())
+    except OSError as exc:
+        raise click.ClickException(f"Failed to read configuration file: {exc}") from exc
+    except json.JSONDecodeError as exc:
+        raise click.ClickException(f"Configuration file is not valid JSON: {exc}") from exc
+    return SimulatorConfiguration.from_dict(payload)
 
 
 def _load_profile(name: Optional[str], profile_file: Optional[str]) -> DeviceProfile:

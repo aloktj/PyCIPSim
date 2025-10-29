@@ -7,7 +7,7 @@ import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 from urllib.parse import urlencode
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
@@ -21,8 +21,9 @@ from ..config_store import (
     SimulatorConfiguration,
 )
 from ..configuration import CIP_SIGNAL_TYPES
-from ..handshake import HandshakePhase, HandshakeResult, perform_handshake
+from ..handshake import HandshakePhase, HandshakeResult, HandshakeStep, perform_handshake
 from ..runtime import CIPIORuntime
+from ..target import CIPTargetRuntime
 from ..session import CIPSession, SessionConfig
 
 
@@ -33,7 +34,7 @@ class ActiveSimulation:
     configuration_name: str
     handshake: HandshakeResult
     started_at: datetime
-    runtime: Optional[CIPIORuntime]
+    runtime: Optional[Any]
 
 
 class SimulatorManager:
@@ -72,6 +73,7 @@ class SimulatorManager:
             forward_open = config.build_forward_open_metadata()
             if forward_open:
                 session_metadata["forward_open"] = forward_open
+            role = (config.role or "originator").lower()
             allowed_hosts = list(SessionConfig().allowed_hosts)
             allowed_hosts.extend(config.allowed_hosts)
             allowed_hosts.append(config.target_ip)
@@ -82,6 +84,33 @@ class SimulatorManager:
                     continue
                 deduped_hosts.append(host)
                 seen_hosts.add(host)
+            mode = (config.runtime_mode or "simulated").lower()
+            should_run_runtime = mode == "live"
+            if role == "target":
+                steps: List[HandshakeStep] = [
+                    HandshakeStep(
+                        phase=HandshakePhase.TCP_CONNECT,
+                        success=True,
+                        detail="Target listener initialized",
+                    )
+                ]
+                handshake = HandshakeResult(success=True, steps=steps, duration_ms=0.0)
+                runtime: Optional[Any] = None
+                if should_run_runtime:
+                    runtime = CIPTargetRuntime(
+                        configuration=config,
+                        store=store,
+                        cycle_interval=self._cycle_interval,
+                    )
+                    runtime.start()
+                self._last_handshake = (config.name, handshake)
+                self._active = ActiveSimulation(
+                    configuration_name=config.name,
+                    handshake=handshake,
+                    started_at=datetime.now(timezone.utc),
+                    runtime=runtime,
+                )
+                return handshake
             session_config = SessionConfig(
                 ip_address=config.target_ip,
                 port=config.target_port,
@@ -89,9 +118,8 @@ class SimulatorManager:
                 metadata=session_metadata,
                 allowed_hosts=tuple(deduped_hosts),
                 allow_external=config.allow_external,
+                transport=config.transport,
             )
-            mode = (config.runtime_mode or "simulated").lower()
-            should_run_runtime = mode == "live"
             if simulate_handshake is not None:
                 handshake_simulated = simulate_handshake
             else:
@@ -264,9 +292,9 @@ def get_app(
                 forward_open_overrides = meta
 
         return templates.TemplateResponse(
+            request,
             "index.html",
             {
-                "request": request,
                 "configs": configs,
                 "current": current,
                 "active": active,
@@ -353,6 +381,8 @@ def get_app(
         multicast: Optional[str] = Form(None),
         network_interface: Optional[str] = Form(None),
         runtime_mode: Optional[str] = Form(None),
+        role: Optional[str] = Form(None),
+        transport: Optional[str] = Form(None),
         allowed_hosts: Optional[str] = Form(None),
         allow_external: Optional[str] = Form(None),
     ) -> RedirectResponse:
@@ -367,6 +397,8 @@ def get_app(
                 multicast=bool(multicast),
                 network_interface=network_interface,
                 runtime_mode=runtime_mode,
+                role=role,
+                transport=transport,
                 allowed_hosts=allowed_hosts,
                 allow_external=allow_external_flag,
             )

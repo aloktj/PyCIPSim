@@ -196,6 +196,22 @@
                 </label>
               </div>
               <div class="inline-field">
+                <label>Role
+                  <select name="role" {% if is_running %}disabled{% endif %}>
+                    <option value="originator" {% if current.role != 'target' %}selected{% endif %}>Originator</option>
+                    <option value="target" {% if current.role == 'target' %}selected{% endif %}>Target</option>
+                  </select>
+                </label>
+              </div>
+              <div class="inline-field">
+                <label>Transport
+                  <select name="transport" {% if is_running %}disabled{% endif %}>
+                    <option value="pycomm3" {% if current.transport != 'pycipsim' %}selected{% endif %}>pycomm3 (external)</option>
+                    <option value="pycipsim" {% if current.transport == 'pycipsim' %}selected{% endif %}>PyCIPSim link</option>
+                  </select>
+                </label>
+              </div>
+              <div class="inline-field">
                 <label>Allowed Hosts
                   <input type="text" name="allowed_hosts" value="{{ current.allowed_hosts_text }}" {% if is_running %}disabled{% endif %} placeholder="Comma-separated" />
                 </label>

@@ -60,6 +60,7 @@ class CIPIORuntime:
             len(self._input_ids),
         )
         self._session.connect()
+        self._session.register_update_listener(self._handle_async_input)
         if self._output_ids:
             thread = threading.Thread(
                 target=self._run_output_loop,
@@ -186,6 +187,35 @@ class CIPIORuntime:
             self._store.update_input_values(
                 self._config_name, assembly.assembly_id, decoded, persist=False
             )
+
+    # ------------------------------------------------------------------
+    # Async update handling
+    # ------------------------------------------------------------------
+    def _handle_async_input(self, assembly_id: int, payload: bytes) -> None:
+        try:
+            assembly = self._configuration.find_assembly(assembly_id)
+        except ConfigurationError:
+            _LOGGER.debug(
+                "Async update for unknown assembly %s on '%s' ignored.",
+                assembly_id,
+                self._config_name,
+            )
+            return
+        try:
+            decoded = parse_assembly_payload(assembly, payload)
+        except ConfigurationError as exc:
+            _LOGGER.error(
+                "Failed to decode async payload for assembly %s on '%s': %s",
+                assembly_id,
+                self._config_name,
+                exc,
+            )
+            return
+        if not decoded:
+            return
+        self._store.update_input_values(
+            self._config_name, assembly_id, decoded, persist=False
+        )
 
 
 __all__ = ["CIPIORuntime"]

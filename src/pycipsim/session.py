@@ -6,12 +6,24 @@ import copy
 import logging
 import os
 import socket
+import struct
+import threading
 import time
 from dataclasses import dataclass, field
-from typing import Any, Dict, Iterable, List, Optional, Protocol, Sequence, Tuple
+from typing import Any, Callable, Dict, Iterable, List, Optional, Protocol, Sequence, Tuple
 
 from .cip import describe_error, resolve_service_code
 from .device import DeviceProfile, ServiceRequest, ServiceResponse
+from .target_protocol import (
+    MSG_ACK,
+    MSG_DATA,
+    MSG_ERROR,
+    MSG_GET,
+    MSG_HELLO,
+    MSG_HELLO_ACK,
+    MSG_SET,
+    TargetMessage,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -98,6 +110,7 @@ class SessionConfig:
     allow_external: bool = False
     username_env_var: Optional[str] = None
     password_env_var: Optional[str] = None
+    transport: str = "pycomm3"
 
     def resolve_credentials(self) -> Dict[str, Optional[str]]:
         """Load credentials from environment variables when configured."""
@@ -150,6 +163,175 @@ class SimulatedTransport:
             raise TransportError("Cannot send message when transport is not connected.")
         _LOGGER.debug("Simulated transport dispatching request %s", request)
         return self._profile.respond(request)
+
+
+class PyCipSimClientTransport:
+    """UDP-based transport for PyCIPSim target interoperability."""
+
+    def __init__(self, config: SessionConfig):
+        self._config = config
+        self._command_sock: Optional[socket.socket] = None
+        self._data_sock: Optional[socket.socket] = None
+        self._listener: Optional[threading.Thread] = None
+        self._stop_event = threading.Event()
+        self._server = (config.ip_address, config.port)
+        self._update_callback: Optional[Callable[[int, bytes], None]] = None
+
+    def register_update_listener(self, callback: Callable[[int, bytes], None]) -> None:
+        self._update_callback = callback
+
+    # ------------------------------------------------------------------
+    # Transport lifecycle
+    # ------------------------------------------------------------------
+    def connect(self) -> None:
+        if self._command_sock is not None:
+            return
+        timeout = max(self._config.timeout, 0.1)
+        command_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        command_sock.settimeout(timeout)
+        source = self._config.resolve_source_address()
+        if source:
+            command_sock.bind(source)
+        data_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        data_sock.settimeout(0.5)
+        if source:
+            data_sock.bind((source[0], 0))
+        else:
+            data_sock.bind(("", 0))
+        self._command_sock = command_sock
+        self._data_sock = data_sock
+        data_port = data_sock.getsockname()[1]
+        hello = TargetMessage.encode(MSG_HELLO, payload=struct.pack("!H", data_port))
+        try:
+            command_sock.sendto(hello, self._server)
+            response = self._receive(expected={MSG_HELLO_ACK})
+            if response.message_type != MSG_HELLO_ACK:
+                raise TransportError("Unexpected response during PyCIPSim handshake")
+        except Exception:
+            self.disconnect()
+            raise
+        self._stop_event.clear()
+        listener = threading.Thread(
+            target=self._listen_loop,
+            name="pycipsim-transport-listener",
+            daemon=True,
+        )
+        listener.start()
+        self._listener = listener
+
+    def disconnect(self) -> None:
+        self._stop_event.set()
+        if self._listener is not None:
+            self._listener.join(timeout=1.0)
+        self._listener = None
+        if self._command_sock is not None:
+            with contextlib.suppress(OSError):
+                self._command_sock.close()
+        if self._data_sock is not None:
+            with contextlib.suppress(OSError):
+                self._data_sock.close()
+        self._command_sock = None
+        self._data_sock = None
+
+    # ------------------------------------------------------------------
+    # Request/response handling
+    # ------------------------------------------------------------------
+    def _resolve_assembly_id(self, request: ServiceRequest) -> int:
+        metadata = request.metadata or {}
+        instance = metadata.get("instance") or request.tag_path
+        try:
+            return int(str(instance), 0)
+        except (TypeError, ValueError) as exc:
+            raise TransportError(f"Assembly instance identifier '{instance}' is not valid.") from exc
+
+    def _receive(self, expected: set[int]) -> TargetMessage:
+        if self._command_sock is None:
+            raise TransportError("PyCIPSim transport is not connected")
+        deadline = time.monotonic() + max(self._config.timeout, 0.1)
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TransportError("Timed out waiting for PyCIPSim response")
+            self._command_sock.settimeout(remaining)
+            try:
+                data, addr = self._command_sock.recvfrom(4096)
+            except socket.timeout:
+                raise TransportError("Timed out waiting for PyCIPSim response")
+            except OSError as exc:
+                raise TransportError(str(exc)) from exc
+            if addr[:2] != self._server:
+                continue
+            try:
+                message = TargetMessage.decode(data)
+            except Exception as exc:
+                _LOGGER.debug("Discarding invalid datagram from %s:%s: %s", addr[0], addr[1], exc)
+                continue
+            if message.message_type in expected or message.message_type == MSG_ERROR:
+                return message
+
+    def _exchange(self, payload: bytes, expected: set[int]) -> TargetMessage:
+        if self._command_sock is None:
+            raise TransportError("PyCIPSim transport is not connected")
+        try:
+            self._command_sock.sendto(payload, self._server)
+        except OSError as exc:
+            raise TransportError(str(exc)) from exc
+        return self._receive(expected)
+
+    def _dispatch_update(self, assembly_id: int, payload: bytes) -> None:
+        callback = self._update_callback
+        if callback is None:
+            return
+        try:
+            callback(assembly_id, payload)
+        except Exception:  # pragma: no cover - defensive
+            _LOGGER.exception("PyCIPSim update listener failed")
+
+    def _listen_loop(self) -> None:
+        if self._data_sock is None:
+            return
+        while not self._stop_event.is_set():
+            try:
+                data, addr = self._data_sock.recvfrom(4096)
+            except socket.timeout:
+                continue
+            except OSError:
+                break
+            try:
+                message = TargetMessage.decode(data)
+            except Exception as exc:
+                _LOGGER.debug("Discarding invalid broadcast from %s:%s: %s", addr[0], addr[1], exc)
+                continue
+            if message.message_type == MSG_DATA:
+                self._dispatch_update(message.assembly_id, message.payload)
+
+    def send(self, request: ServiceRequest) -> ServiceResponse:
+        assembly_id = self._resolve_assembly_id(request)
+        if request.service_code == "GET_ASSEMBLY":
+            message = TargetMessage.encode(MSG_GET, assembly_id=assembly_id)
+            response = self._exchange(message, expected={MSG_DATA, MSG_ERROR})
+            if response.message_type == MSG_DATA:
+                payload = response.payload if response.payload else b""
+                return ServiceResponse(
+                    service=request.service_code,
+                    status="SUCCESS",
+                    payload=payload,
+                )
+            status = response.payload.decode("utf-8", errors="ignore") or "ERROR"
+            return ServiceResponse(service=request.service_code, status=status, payload=None)
+        if request.service_code == "SET_ASSEMBLY":
+            payload = request.payload or b""
+            message = TargetMessage.encode(MSG_SET, assembly_id=assembly_id, payload=payload)
+            response = self._exchange(message, expected={MSG_ACK, MSG_ERROR})
+            if response.message_type == MSG_ACK:
+                return ServiceResponse(
+                    service=request.service_code,
+                    status="SUCCESS",
+                    payload=payload if payload else None,
+                )
+            status = response.payload.decode("utf-8", errors="ignore") or "ERROR"
+            return ServiceResponse(service=request.service_code, status=status, payload=None)
+        raise TransportError("PyCIPSim transport only supports GET_ASSEMBLY and SET_ASSEMBLY services")
 
 
 class PyComm3Transport:
@@ -368,7 +550,11 @@ class CIPSession:
         if self._profile is not None:
             self._transport = SimulatedTransport(self._profile)
         else:
-            self._transport = PyComm3Transport(self.config)
+            transport_mode = (self.config.transport or "pycomm3").lower()
+            if transport_mode == "pycipsim":
+                self._transport = PyCipSimClientTransport(self.config)
+            else:
+                self._transport = PyComm3Transport(self.config)
         return self._transport
 
     def _resolve_allowed_hosts(self) -> Iterable[str]:
@@ -459,3 +645,11 @@ class CIPSession:
                 )
                 time.sleep(min(0.25 * attempt, self.config.timeout))
         raise TransportError(f"Failed to send request after {self.config.retries} retries") from last_error
+
+    def register_update_listener(self, callback: Callable[[int, bytes], None]) -> None:
+        """Register a callback for asynchronous assembly updates when supported."""
+
+        transport = self._ensure_transport()
+        handler = getattr(transport, "register_update_listener", None)
+        if callable(handler):
+            handler(callback)
