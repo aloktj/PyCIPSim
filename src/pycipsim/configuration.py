@@ -745,6 +745,27 @@ class SimulatorConfiguration:
             allowed_hosts_raw = raw.get("allowed_hosts")
         if not allow_external and "allow_external" in raw:
             allow_external = bool(raw.get("allow_external", False))
+
+        listener_host = "0.0.0.0"
+        listener_port = 44818
+        listener_interface: Optional[str] = None
+        listener = raw.get("listener")
+        if isinstance(listener, dict):
+            host_value = listener.get("host")
+            if host_value is not None and str(host_value).strip():
+                listener_host = str(host_value).strip()
+            port_value = listener.get("port")
+            if port_value is not None:
+                try:
+                    listener_port = int(port_value)
+                except (TypeError, ValueError) as exc:  # pragma: no cover - defensive
+                    raise ConfigurationError(
+                        "Listener port must be an integer when provided."
+                    ) from exc
+            interface_value = listener.get("interface")
+            if interface_value is not None and str(interface_value).strip():
+                listener_interface = str(interface_value).strip()
+
         return cls(
             name=str(name),
             target_ip=str(target_ip),
@@ -759,6 +780,9 @@ class SimulatorConfiguration:
             assemblies=assemblies,
             allowed_hosts=parse_allowed_hosts(allowed_hosts_raw),
             allow_external=allow_external,
+            listener_host=listener_host,
+            listener_port=listener_port,
+            listener_interface=listener_interface,
         )
 
     def to_dict(self) -> Dict[str, Any]:

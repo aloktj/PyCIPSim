@@ -14,6 +14,11 @@
     ],
     "allow_external": false
   },
+  "listener": {
+    "host": "172.16.0.150",
+    "port": 44818,
+    "interface": "enp0s9"
+  },
   "metadata": {
     "forward_open": {
       "application_class": 4,
