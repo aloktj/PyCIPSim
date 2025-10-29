@@ -257,8 +257,15 @@ def get_app(
     templates = _templates()
     app = FastAPI(title="PyCIPSim Web")
 
-    def redirect(path: str, message: Optional[str] = None, error: Optional[str] = None) -> RedirectResponse:
+    def redirect(
+        path: str,
+        message: Optional[str] = None,
+        error: Optional[str] = None,
+        selected: Optional[str] = None,
+    ) -> RedirectResponse:
         query = {}
+        if selected:
+            query["selected"] = selected
         if message:
             query["message"] = message
         if error:
@@ -276,6 +283,11 @@ def get_app(
         if selected:
             try:
                 current = store.get(selected)
+            except ConfigurationNotFoundError:
+                current = None
+        if current is None and active:
+            try:
+                current = store.get(active.configuration_name)
             except ConfigurationNotFoundError:
                 current = None
         if current is None and configs:
@@ -321,7 +333,11 @@ def get_app(
         except json.JSONDecodeError as exc:
             return redirect("/", error=f"Configuration is not valid JSON: {exc}")
         store.upsert(config)
-        return redirect("/", message=f"Configuration '{config.name}' uploaded.")
+        return redirect(
+            "/",
+            message=f"Configuration '{config.name}' uploaded.",
+            selected=config.name,
+        )
 
     @app.post("/configs/{name}/start")
     async def start_simulator(name: str) -> RedirectResponse:
@@ -332,18 +348,38 @@ def get_app(
         try:
             handshake = manager.start(config, store)
         except RuntimeError as exc:
-            return redirect("/", error=str(exc))
+            return redirect("/", error=str(exc), selected=name)
         if not handshake.success:
-            return redirect("/", error=_format_handshake_failure(handshake))
+            return redirect(
+                "/",
+                error=_format_handshake_failure(handshake),
+                selected=name,
+            )
         return redirect(
             "/",
             message=f"Simulator started for {name}. Handshake duration {handshake.duration_ms:.2f}ms.",
+            selected=name,
         )
+
+    @app.post("/configs/{name}/delete")
+    async def delete_configuration(name: str) -> RedirectResponse:
+        try:
+            store.get(name)
+        except ConfigurationNotFoundError:
+            return redirect("/", error="Configuration not found")
+        try:
+            manager.ensure_config_mutable(name)
+        except RuntimeError as exc:
+            return redirect("/", error=str(exc), selected=name)
+        store.delete(name)
+        return redirect("/", message=f"Configuration '{name}' deleted.")
 
     @app.post("/stop")
     async def stop_simulator() -> RedirectResponse:
+        active = manager.active()
+        selected = active.configuration_name if active else None
         manager.stop()
-        return redirect("/", message="Simulator stopped.")
+        return redirect("/", message="Simulator stopped.", selected=selected)
 
     @app.post("/configs/{name}/select")
     async def select_configuration(name: str) -> RedirectResponse:
@@ -351,7 +387,7 @@ def get_app(
             store.get(name)
         except ConfigurationNotFoundError:
             return redirect("/", error="Configuration not found")
-        return redirect(f"/?selected={name}")
+        return redirect("/", selected=name)
 
     @app.post("/configs/{name}/assemblies/{assembly_id}/signals/{signal_name}/value")
     async def update_signal_value(
@@ -368,9 +404,9 @@ def get_app(
         except ConfigurationNotFoundError:
             return redirect("/", error="Configuration not found")
         except ConfigurationError as exc:
-            return redirect("/", error=str(exc))
+            return redirect("/", error=str(exc), selected=name)
         message = "Signal value cleared." if action == "clear" else f"Signal '{signal_name}' value updated."
-        return redirect("/", message=message)
+        return redirect("/", message=message, selected=name)
 
     @app.post("/configs/{name}/target")
     async def update_target(
@@ -403,12 +439,12 @@ def get_app(
                 allow_external=allow_external_flag,
             )
         except RuntimeError as exc:
-            return redirect("/", error=str(exc))
+            return redirect("/", error=str(exc), selected=name)
         except ConfigurationNotFoundError:
             return redirect("/", error="Configuration not found")
         except ConfigurationError as exc:
-            return redirect("/", error=str(exc))
-        return redirect("/", message=f"Target for '{name}' updated.")
+            return redirect("/", error=str(exc), selected=name)
+        return redirect("/", message=f"Target for '{name}' updated.", selected=name)
 
     @app.post("/configs/{name}/assemblies/{assembly_id}/signals/{signal_name}/details")
     async def update_signal_details(
@@ -430,12 +466,12 @@ def get_app(
                 signal_type=signal_type,
             )
         except RuntimeError as exc:
-            return redirect("/", error=str(exc))
+            return redirect("/", error=str(exc), selected=name)
         except ConfigurationNotFoundError:
             return redirect("/", error="Configuration not found")
         except ConfigurationError as exc:
-            return redirect("/", error=str(exc))
-        return redirect("/", message=f"Signal '{signal_name}' updated.")
+            return redirect("/", error=str(exc), selected=name)
+        return redirect("/", message=f"Signal '{signal_name}' updated.", selected=name)
 
     @app.post("/configs/{name}/assemblies/{assembly_id}/metadata")
     async def update_assembly_metadata(
@@ -455,13 +491,13 @@ def get_app(
                 size_bits=size_bits,
             )
         except RuntimeError as exc:
-            return redirect("/", error=str(exc))
+            return redirect("/", error=str(exc), selected=name)
         except ConfigurationNotFoundError:
             return redirect("/", error="Configuration not found")
         except ConfigurationError as exc:
-            return redirect("/", error=str(exc))
+            return redirect("/", error=str(exc), selected=name)
         message = f"Assembly '{assembly.name}' updated."
-        return redirect("/", message=message)
+        return redirect("/", message=message, selected=name)
 
     @app.post("/configs/{name}/assemblies/add")
     async def add_assembly(
@@ -485,12 +521,16 @@ def get_app(
                 relative_assembly=relative_assembly or None,
             )
         except RuntimeError as exc:
-            return redirect("/", error=str(exc))
+            return redirect("/", error=str(exc), selected=name)
         except ConfigurationNotFoundError:
             return redirect("/", error="Configuration not found")
         except ConfigurationError as exc:
-            return redirect("/", error=str(exc))
-        return redirect("/", message=f"Assembly '{assembly_name}' added.")
+            return redirect("/", error=str(exc), selected=name)
+        return redirect(
+            "/",
+            message=f"Assembly '{assembly_name}' added.",
+            selected=name,
+        )
 
     @app.post("/configs/{name}/assemblies/{assembly_id}/delete")
     async def remove_assembly(name: str, assembly_id: int) -> RedirectResponse:
@@ -498,12 +538,16 @@ def get_app(
             manager.ensure_config_mutable(name)
             store.remove_assembly(name, assembly_id)
         except RuntimeError as exc:
-            return redirect("/", error=str(exc))
+            return redirect("/", error=str(exc), selected=name)
         except ConfigurationNotFoundError:
             return redirect("/", error="Configuration not found")
         except ConfigurationError as exc:
-            return redirect("/", error=str(exc))
-        return redirect("/", message=f"Assembly '{assembly_id}' removed.")
+            return redirect("/", error=str(exc), selected=name)
+        return redirect(
+            "/",
+            message=f"Assembly '{assembly_id}' removed.",
+            selected=name,
+        )
 
     @app.post("/configs/{name}/assemblies/{assembly_id}/signals/add")
     async def add_signal(
@@ -527,12 +571,16 @@ def get_app(
                 relative_signal=relative_signal or None,
             )
         except RuntimeError as exc:
-            return redirect("/", error=str(exc))
+            return redirect("/", error=str(exc), selected=name)
         except ConfigurationNotFoundError:
             return redirect("/", error="Configuration not found")
         except ConfigurationError as exc:
-            return redirect("/", error=str(exc))
-        return redirect("/", message=f"Signal '{new_name}' added.")
+            return redirect("/", error=str(exc), selected=name)
+        return redirect(
+            "/",
+            message=f"Signal '{new_name}' added.",
+            selected=name,
+        )
 
     @app.post("/configs/{name}/assemblies/{assembly_id}/signals/{signal_name}/delete")
     async def remove_signal(name: str, assembly_id: int, signal_name: str) -> RedirectResponse:
@@ -540,12 +588,16 @@ def get_app(
             manager.ensure_config_mutable(name)
             store.remove_signal(name, assembly_id, signal_name)
         except RuntimeError as exc:
-            return redirect("/", error=str(exc))
+            return redirect("/", error=str(exc), selected=name)
         except ConfigurationNotFoundError:
             return redirect("/", error="Configuration not found")
         except ConfigurationError as exc:
-            return redirect("/", error=str(exc))
-        return redirect("/", message=f"Signal '{signal_name}' removed.")
+            return redirect("/", error=str(exc), selected=name)
+        return redirect(
+            "/",
+            message=f"Signal '{signal_name}' removed.",
+            selected=name,
+        )
 
     @app.get("/configs/{name}/export")
     async def export_configuration(name: str) -> Response:
