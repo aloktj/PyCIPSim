@@ -38,6 +38,238 @@ def _sample_configuration(*, direction: str = "input") -> SimulatorConfiguration
     return SimulatorConfiguration.from_dict(data)
 
 
+def test_simulator_configuration_listener_defaults() -> None:
+    config = SimulatorConfiguration.from_dict(
+        {
+            "name": "Defaults",
+            "target": {"ip": "1.1.1.1", "port": 44818},
+            "assemblies": [],
+        }
+    )
+
+    assert config.role == "originator"
+    assert config.listener_host == "0.0.0.0"
+    assert config.listener_port == 44818
+
+
+def test_forward_open_metadata_generation() -> None:
+    config = SimulatorConfiguration.from_dict(
+        {
+            "name": "Runtime",
+            "target": {
+                "ip": "10.0.0.10",
+                "port": 44818,
+                "multicast": True,
+            },
+            "assemblies": [
+                {"id": 1, "name": "Config", "direction": "config", "size_bits": 16},
+                {"id": 100, "name": "Inputs", "direction": "input", "size_bits": 32},
+                {"id": 200, "name": "Outputs", "direction": "output", "size_bits": 8},
+            ],
+        }
+    )
+
+    metadata = config.build_forward_open_metadata()
+    assert metadata is not None
+    assert metadata["application_instance"] == 1
+    assert metadata["t_to_o_instance"] == 100
+    assert metadata["o_to_t_instance"] == 200
+    assert metadata["configuration_point"] == 1
+    assert metadata["t_to_o_connection_type"] == "multicast"
+    assert metadata["o_to_t_connection_type"] == "point_to_point"
+    assert metadata["t_to_o_size"] == 12
+    assert metadata["o_to_t_size"] == 5
+    assert metadata["t_to_o_header_bytes"] == 8
+    assert metadata["o_to_t_header_bytes"] == 4
+    assert metadata["connection_points"] == [100, 200, 1]
+
+
+def test_forward_open_prefers_largest_directional_payloads() -> None:
+    config = SimulatorConfiguration.from_dict(
+        {
+            "name": "Runtime",
+            "target": {"ip": "10.0.0.10", "multicast": True},
+            "assemblies": [
+                {"id": 1, "name": "Config", "direction": "config", "size_bits": 16},
+                {"id": 10, "name": "Heartbeat", "direction": "input", "size_bits": 0},
+                {"id": 100, "name": "Inputs", "direction": "input", "size_bits": 1120},
+                {"id": 20, "name": "Diag", "direction": "output", "size_bits": 8},
+                {"id": 200, "name": "Outputs", "direction": "output", "size_bits": 1136},
+            ],
+        }
+    )
+
+    metadata = config.build_forward_open_metadata()
+    assert metadata is not None
+    assert metadata["t_to_o_instance"] == 100
+    assert metadata["o_to_t_instance"] == 200
+    assert metadata["connection_points"][:2] == [100, 200]
+    assert metadata["t_to_o_size"] == 148
+    assert metadata["o_to_t_size"] == 146
+    assert metadata["t_to_o_header_bytes"] == 8
+    assert metadata["o_to_t_header_bytes"] == 4
+
+
+def test_forward_open_header_overrides() -> None:
+    config = SimulatorConfiguration.from_dict(
+        {
+            "name": "Runtime",
+            "target": {"ip": "10.0.0.10"},
+            "metadata": {
+                "forward_open": {
+                    "o_to_t_header_bytes": 0,
+                    "t_to_o_header_bytes": 0,
+                }
+            },
+            "assemblies": [
+                {"id": 1, "name": "Config", "direction": "config", "size_bits": 16},
+                {"id": 100, "name": "Inputs", "direction": "input", "size_bits": 32},
+                {"id": 200, "name": "Outputs", "direction": "output", "size_bits": 8},
+            ],
+        }
+    )
+
+    metadata = config.build_forward_open_metadata()
+    assert metadata is not None
+    assert metadata["t_to_o_size"] == 4
+    assert metadata["o_to_t_size"] == 1
+    assert metadata["t_to_o_header_bytes"] == 0
+    assert metadata["o_to_t_header_bytes"] == 0
+
+
+def test_forward_open_overrides_are_sanitized() -> None:
+    config = SimulatorConfiguration.from_dict(
+        {
+            "name": "Runtime",
+            "target": {"ip": "10.0.0.10", "multicast": True},
+            "metadata": {
+                "forward_open": {
+                    "o_to_t_size": 1,
+                    "t_to_o_size": 2,
+                    "connection_points": [200, 100],
+                }
+            },
+            "assemblies": [
+                {"id": 1, "name": "Config", "direction": "config", "size_bits": 16},
+                {"id": 100, "name": "Inputs", "direction": "input", "size_bits": 32},
+                {"id": 200, "name": "Outputs", "direction": "output", "size_bits": 8},
+            ],
+        }
+    )
+
+    metadata = config.build_forward_open_metadata()
+    assert metadata is not None
+    # Defaults should win over undersized overrides while preserving multicast choice.
+    assert metadata["t_to_o_size"] == 12
+    assert metadata["o_to_t_size"] == 5
+    # Connection points should start with T->O, then O->T, followed by the config point.
+    assert metadata["connection_points"] == [100, 200, 1]
+
+
+def test_update_forward_open_overrides(tmp_path: Path) -> None:
+    storage = tmp_path / "configs.json"
+    store = ConfigurationStore(storage_path=storage)
+    config = SimulatorConfiguration.from_dict(
+        {
+            "name": "DemoConfig",
+            "target": {"ip": "10.0.0.5", "port": 44818},
+            "assemblies": [
+                {"id": 0x65, "name": "Input", "direction": "input", "size_bits": 1120},
+                {"id": 0x64, "name": "Output", "direction": "output", "size_bits": 1136},
+            ],
+        }
+    )
+    store.upsert(config)
+
+    overrides = store.update_forward_open(
+        "DemoConfig",
+        {
+            "application_class": "0x04",
+            "application_instance": "2",
+            "t_to_o_instance": "0x65",
+            "o_to_t_instance": "0x64",
+            "configuration_point": "0x01",
+            "connection_points": "0x65, 0x64, 0x01",
+            "o_to_t_size": "146",
+            "o_to_t_header_bytes": "4",
+            "o_to_t_connection_type": "point-to-point",
+            "t_to_o_size": "148",
+            "t_to_o_header_bytes": "8",
+            "t_to_o_connection_type": "multicast",
+            "o_to_t_rpi_us": "200000",
+            "t_to_o_rpi_us": "200000",
+            "transport_type_trigger": "0x01",
+            "timeout_multiplier": "0",
+            "connection_serial": "0x936d",
+            "vendor_id": "0x0476",
+            "originator_serial": "0x47",
+            "use_large_forward_open": "on",
+        },
+    )
+
+    assert overrides["o_to_t_size"] == 146
+    assert overrides["t_to_o_size"] == 148
+    assert overrides["t_to_o_connection_type"] == "multicast"
+    assert overrides["connection_points"] == [0x65, 0x64, 0x01]
+    assert overrides["use_large_forward_open"] is True
+
+
+def test_update_assembly_production_interval(tmp_path: Path) -> None:
+    store = ConfigurationStore(storage_path=tmp_path / "configs.json")
+    config = _sample_configuration(direction="output")
+    store.upsert(config)
+
+    store.update_assembly(
+        "DemoConfig",
+        100,
+        new_id="100",
+        direction="output",
+        production_interval="250",
+    )
+
+    updated = store.get("DemoConfig")
+    assert updated.find_assembly(100).production_interval_ms == 250
+
+
+def test_add_assembly_with_production_interval(tmp_path: Path) -> None:
+    store = ConfigurationStore(storage_path=tmp_path / "configs.json")
+    config = _sample_configuration(direction="output")
+    store.upsert(config)
+
+    store.add_assembly(
+        "DemoConfig",
+        assembly_id="0x200",
+        assembly_name="ExtraOutput",
+        direction="output",
+        size_bits="16",
+        production_interval="500",
+    )
+
+    added = store.get("DemoConfig").find_assembly(0x200)
+    assert added.production_interval_ms == 500
+
+
+def test_update_forward_open_rejects_invalid_values(tmp_path: Path) -> None:
+    storage = tmp_path / "configs.json"
+    store = ConfigurationStore(storage_path=storage)
+    config = SimulatorConfiguration.from_dict(
+        {
+            "name": "DemoConfig",
+            "target": {"ip": "10.0.0.5", "port": 44818},
+            "assemblies": [
+                {"id": 0x65, "name": "Input", "direction": "input", "size_bits": 1120},
+                {"id": 0x64, "name": "Output", "direction": "output", "size_bits": 1136},
+            ],
+        }
+    )
+    store.upsert(config)
+
+    with pytest.raises(ConfigurationError):
+        store.update_forward_open("DemoConfig", {"o_to_t_size": "-1"})
+
+    with pytest.raises(ConfigurationError):
+        store.update_forward_open("DemoConfig", {"t_to_o_connection_type": "invalid"})
+
 def test_upsert_and_reload(tmp_path: Path) -> None:
     storage = tmp_path / "configs.json"
     store = ConfigurationStore(storage_path=storage)

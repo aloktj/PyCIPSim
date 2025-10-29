@@ -1,6 +1,7 @@
 """FastAPI application exposing the web configuration UI."""
 from __future__ import annotations
 
+import contextlib
 import json
 import socket
 import threading
@@ -253,9 +254,9 @@ def get_app(
                 if last_handshake and last_handshake[0] == current.name:
                     handshake_result = last_handshake[1]
         return templates.TemplateResponse(
+            request,
             "index.html",
             {
-                "request": request,
                 "configs": configs,
                 "current": current,
                 "active": active,

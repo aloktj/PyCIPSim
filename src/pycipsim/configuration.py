@@ -244,6 +244,7 @@ class AssemblyDefinition:
     direction: str
     size_bits: int = 0
     signals: List[SignalDefinition] = field(default_factory=list)
+    production_interval_ms: Optional[int] = None
 
     @classmethod
     def from_dict(cls, raw: Dict[str, Any]) -> "AssemblyDefinition":
@@ -268,22 +269,58 @@ class AssemblyDefinition:
             if size_bits < 0:
                 raise ConfigurationError(f"Assembly '{name}' cannot have a negative size.")
         signals = [SignalDefinition.from_dict(sig) for sig in raw.get("signals", [])]
+        interval_ms: Optional[int] = None
+        if "production_interval_ms" in raw:
+            try:
+                candidate = raw["production_interval_ms"]
+                interval_ms = int(str(candidate)) if candidate is not None else None
+            except (TypeError, ValueError) as exc:  # pragma: no cover - defensive
+                raise ConfigurationError(
+                    f"Assembly '{name}' has invalid production interval '{raw['production_interval_ms']}'."
+                ) from exc
+            if interval_ms is not None and interval_ms < 0:
+                raise ConfigurationError(
+                    f"Assembly '{name}' cannot have a negative production interval."
+                )
+        elif "production_interval" in raw:
+            try:
+                candidate = raw["production_interval"]
+                interval_ms = int(float(str(candidate)) * 1000)
+            except (TypeError, ValueError) as exc:  # pragma: no cover - defensive
+                raise ConfigurationError(
+                    f"Assembly '{name}' has invalid production interval '{raw['production_interval']}'."
+                ) from exc
+            if interval_ms is not None and interval_ms < 0:
+                raise ConfigurationError(
+                    f"Assembly '{name}' cannot have a negative production interval."
+                )
         return cls(
             assembly_id=assembly_id,
             name=name,
             direction=str(direction),
             size_bits=size_bits,
             signals=signals,
+            production_interval_ms=interval_ms,
         )
 
     def to_dict(self) -> Dict[str, Any]:
-        return {
+        payload: Dict[str, Any] = {
             "id": self.assembly_id,
             "name": self.name,
             "direction": self.direction,
             "size_bits": self.size_bits,
             "signals": [signal.to_dict() for signal in self.signals],
         }
+        if self.production_interval_ms is not None:
+            payload["production_interval_ms"] = self.production_interval_ms
+        return payload
+
+    def production_interval_seconds(self) -> float:
+        """Return the configured production interval in seconds."""
+
+        if self.production_interval_ms is None or self.production_interval_ms <= 0:
+            return 0.0
+        return self.production_interval_ms / 1000.0
 
     def iter_signals(self) -> Iterable[SignalDefinition]:
         """Iterate over contained signals."""
@@ -363,6 +400,254 @@ class SimulatorConfiguration:
     allowed_hosts: Tuple[str, ...] = field(default_factory=tuple)
     allow_external: bool = False
     assemblies: List[AssemblyDefinition] = field(default_factory=list)
+    role: str = "originator"
+    listener_host: str = "0.0.0.0"
+    listener_port: int = 44818
+    listener_interface: Optional[str] = None
+
+    def max_connection_size_bytes(self) -> int:
+        """Return the maximum assembly size in bytes for forward-open sizing."""
+
+        if not self.assemblies:
+            return 0
+        return max(_total_bytes(assembly.size_bits) for assembly in self.assemblies)
+
+    def build_forward_open_metadata(self) -> Optional[Dict[str, Any]]:
+        """Compose metadata required for a Class-1 forward open."""
+
+        if not self.assemblies:
+            return None
+
+        def _direction(value: Optional[str]) -> str:
+            text = (value or "").strip().lower()
+            mapping = {
+                "in": "input",
+                "input": "input",
+                "t->o": "input",
+                "t_to_o": "input",
+                "t2o": "input",
+                "to": "input",
+                "target_to_originator": "input",
+                "out": "output",
+                "output": "output",
+                "o->t": "output",
+                "o_to_t": "output",
+                "o2t": "output",
+                "ot": "output",
+                "originator_to_target": "output",
+                "config": "config",
+                "configuration": "config",
+            }
+            return mapping.get(text, text)
+
+        def _select_primary(assemblies: List[AssemblyDefinition]) -> Optional[AssemblyDefinition]:
+            """Pick the assembly that should anchor a connection direction."""
+
+            if not assemblies:
+                return None
+
+            non_zero = [a for a in assemblies if int(a.size_bits or 0) > 0]
+            if non_zero:
+                # Prefer the largest non-zero assembly so the forward-open
+                # mirrors the primary I/O payload exchanged during runtime.
+                return max(non_zero, key=lambda a: int(a.size_bits or 0))
+
+            # If every candidate reports zero bits fall back to the first
+            # declared assembly to preserve deterministic behaviour.
+            return assemblies[0]
+
+        inputs = [
+            assembly
+            for assembly in self.assemblies
+            if _direction(assembly.direction) in {"input", "in"}
+        ]
+        outputs = [
+            assembly
+            for assembly in self.assemblies
+            if _direction(assembly.direction) in {"output", "out"}
+        ]
+
+        input_assembly = _select_primary(inputs)
+        output_assembly = _select_primary(outputs)
+
+        if input_assembly is None or output_assembly is None:
+            return None
+
+        config_candidates = [
+            assembly
+            for assembly in self.assemblies
+            if _direction(assembly.direction) in {"config", "configuration"}
+        ]
+        if not config_candidates:
+            config_candidates = [
+                assembly
+                for assembly in self.assemblies
+                if "config" in assembly.name.lower()
+            ]
+        configuration = config_candidates[0] if config_candidates else None
+
+        overrides_raw = self.metadata.get("forward_open") if isinstance(self.metadata, dict) else None
+        overrides: Dict[str, Any] = {}
+        if isinstance(overrides_raw, dict):
+            overrides = dict(overrides_raw)
+
+        def _parse_override_int(key: str) -> Optional[int]:
+            if key not in overrides:
+                return None
+            try:
+                parsed = int(str(overrides[key]), 0)
+            except Exception as exc:  # pragma: no cover - defensive
+                raise ConfigurationError(
+                    f"Forward-open override '{key}' must be numeric."
+                ) from exc
+            if parsed < 0:
+                raise ConfigurationError(
+                    f"Forward-open override '{key}' cannot be negative."
+                )
+            return parsed
+
+        application_instance = _parse_override_int("application_instance")
+        if application_instance is None:
+            application_instance = 0x01
+
+        t_to_o_instance = _parse_override_int("t_to_o_instance")
+        if t_to_o_instance is None:
+            t_to_o_instance = input_assembly.assembly_id
+
+        o_to_t_instance = _parse_override_int("o_to_t_instance")
+        if o_to_t_instance is None:
+            o_to_t_instance = output_assembly.assembly_id
+
+        def _header_bytes(key: str, default: int) -> int:
+            value = overrides.get(key)
+            if value is None:
+                return default
+            try:
+                parsed = int(str(value), 0)
+            except Exception as exc:  # pragma: no cover - defensive
+                raise ConfigurationError(
+                    f"Forward-open override '{key}' must be numeric."
+                ) from exc
+            if parsed < 0:
+                raise ConfigurationError(
+                    f"Forward-open override '{key}' cannot be negative."
+                )
+            return parsed
+
+        base_o_to_t = max(1, _total_bytes(output_assembly.size_bits))
+        base_t_to_o = max(1, _total_bytes(input_assembly.size_bits))
+        o_to_t_header = _header_bytes("o_to_t_header_bytes", 4 if base_o_to_t else 0)
+        t_to_o_header = _header_bytes("t_to_o_header_bytes", 8 if base_t_to_o else 0)
+        default_o_to_t_size = base_o_to_t + o_to_t_header
+        default_t_to_o_size = base_t_to_o + t_to_o_header
+
+        application_class = _parse_override_int("application_class")
+        if application_class is None:
+            application_class = 0x04
+
+        metadata: Dict[str, Any] = {
+            "application_class": application_class,
+            "application_instance": application_instance,
+            "o_to_t_instance": o_to_t_instance,
+            "t_to_o_instance": t_to_o_instance,
+            "o_to_t_connection_type": overrides.get(
+                "o_to_t_connection_type", "point_to_point"
+            ),
+            "t_to_o_connection_type": overrides.get(
+                "t_to_o_connection_type",
+                "multicast" if self.multicast else "point_to_point",
+            ),
+            "o_to_t_rpi_us": overrides.get("o_to_t_rpi_us", 200_000),
+            "t_to_o_rpi_us": overrides.get("t_to_o_rpi_us", 200_000),
+            "transport_type_trigger": overrides.get("transport_type_trigger", 0x01),
+        }
+
+        configuration_point_override = _parse_override_int("configuration_point")
+        configuration_point = configuration_point_override
+        if configuration_point is None and configuration is not None:
+            configuration_point = configuration.assembly_id
+        if configuration_point is not None:
+            metadata["configuration_point"] = configuration_point
+
+        connection_points: List[int] = []
+        for point in (t_to_o_instance, o_to_t_instance):
+            if point not in connection_points:
+                connection_points.append(point)
+        if configuration_point is not None and configuration_point not in connection_points:
+            connection_points.append(configuration_point)
+        override_o_to_t_size = _parse_override_int("o_to_t_size")
+        override_t_to_o_size = _parse_override_int("t_to_o_size")
+
+        metadata["o_to_t_size"] = max(
+            max(1, default_o_to_t_size), override_o_to_t_size or 0
+        )
+        metadata["t_to_o_size"] = max(
+            max(1, default_t_to_o_size), override_t_to_o_size or 0
+        )
+
+        override_points = overrides.get("connection_points")
+        parsed_points: List[int] = []
+        if override_points is not None:
+            try:
+                iterable = list(override_points)
+            except TypeError as exc:  # pragma: no cover - defensive
+                raise ConfigurationError(
+                    "Forward-open override 'connection_points' must be an iterable."
+                ) from exc
+            for index, value in enumerate(iterable):
+                try:
+                    point = int(str(value), 0)
+                except Exception as exc:  # pragma: no cover - defensive
+                    raise ConfigurationError(
+                        f"Forward-open override 'connection_points[{index}]' must be numeric."
+                    ) from exc
+                if point < 0:
+                    raise ConfigurationError(
+                        "Forward-open connection points cannot be negative."
+                    )
+                if point not in parsed_points:
+                    parsed_points.append(point)
+        connection_points = parsed_points or connection_points
+
+        required_order = [t_to_o_instance, o_to_t_instance]
+        extras: List[int] = []
+        for point in connection_points:
+            if point in required_order:
+                continue
+            if configuration_point is not None and point == configuration_point:
+                continue
+            if point not in extras:
+                extras.append(point)
+
+        ordered_points: List[int] = []
+        for point in required_order:
+            if point not in ordered_points:
+                ordered_points.append(point)
+        if configuration_point is not None and configuration_point not in ordered_points:
+            ordered_points.append(configuration_point)
+        for point in extras:
+            if point not in ordered_points:
+                ordered_points.append(point)
+
+        metadata["connection_points"] = ordered_points
+
+        metadata["o_to_t_header_bytes"] = o_to_t_header
+        metadata["t_to_o_header_bytes"] = t_to_o_header
+
+        optional_keys = (
+            "o_to_t_connection_id",
+            "t_to_o_connection_id",
+            "connection_serial",
+            "vendor_id",
+            "originator_serial",
+            "timeout_multiplier",
+            "use_large_forward_open",
+        )
+        for key in optional_keys:
+            if key in overrides:
+                metadata[key] = overrides[key]
+
+        return metadata
 
     def max_connection_size_bytes(self) -> int:
         """Return the maximum assembly size in bytes for forward-open sizing."""
@@ -433,6 +718,12 @@ class SimulatorConfiguration:
             },
             "metadata": self.metadata,
             "assemblies": [assembly.to_dict() for assembly in self.assemblies],
+            "role": self.role,
+            "listener": {
+                "host": self.listener_host,
+                "port": self.listener_port,
+                "interface": self.listener_interface,
+            },
         }
 
     @property

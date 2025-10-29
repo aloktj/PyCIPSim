@@ -10,6 +10,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, List, Optional, Protocol, Sequence, Tuple
 
+from .cip import describe_error, resolve_service_code
 from .device import DeviceProfile, ServiceRequest, ServiceResponse
 
 _LOGGER = logging.getLogger(__name__)
@@ -52,6 +53,32 @@ class Transport(Protocol):
 
     def send(self, request: ServiceRequest) -> ServiceResponse:  # pragma: no cover - interface
         """Send a service request and return the response."""
+
+
+def _summarize_cip_error(error: Any) -> str:
+    """Render CIP response errors using known status descriptions when possible."""
+
+    if isinstance(error, str):
+        return error
+
+    general_status = getattr(error, "status", None)
+    if general_status is None:
+        general_status = getattr(error, "general_status", None)
+
+    if isinstance(general_status, int):
+        description = describe_error(general_status)
+    else:
+        description = str(error)
+
+    extended = getattr(error, "extended_status", None)
+    if extended is None:
+        extended = getattr(error, "extended_statuses", None)
+    if isinstance(extended, (list, tuple)):
+        hex_values = [f"0x{int(code) & 0xFFFF:04X}" for code in extended if isinstance(code, int)]
+        if hex_values:
+            description = f"{description} (extended {', '.join(hex_values)})"
+
+    return description
 
 
 @dataclass(slots=True)

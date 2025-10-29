@@ -43,3 +43,38 @@ def test_benchmark_meets_target(tmp_path):
 
     assert result.exit_code == 0
     assert "Benchmark Summary" in result.output
+
+
+def test_serve_command_with_assembly_file(tmp_path):
+    assemblies = [
+        {
+            "id": 100,
+            "name": "Outputs",
+            "direction": "output",
+            "size_bits": 16,
+            "production_interval_ms": 50,
+            "signals": [
+                {"name": "Value", "offset": 0, "type": "UINT", "value": "123"},
+            ],
+        }
+    ]
+    assembly_file = tmp_path / "assemblies.json"
+    assembly_file.write_text(json.dumps(assemblies), encoding="utf-8")
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "serve",
+            "--assembly-file",
+            str(assembly_file),
+            "--name",
+            "TargetServe",
+            "--duration",
+            "0",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert "Target simulator listening on" in result.output
+    assert "Target server stopped." in result.output
