@@ -41,6 +41,10 @@ _SIGNAL_TYPE_LOOKUP = {item.lower(): item for item in CIP_SIGNAL_TYPES}
 # legacy behaviour (no live transport), while "live" enables network sessions.
 RUNTIME_MODES: tuple[str, ...] = ("simulated", "live")
 
+# Supported simulator roles. Originators actively connect to a target while
+# the target role hosts ENIP sessions that originators can connect to.
+SIMULATOR_ROLES: tuple[str, ...] = ("originator", "target")
+
 
 # Nominal bit widths for well-known CIP signal types.
 _CIP_SIGNAL_TYPE_BITS: Dict[str, int] = {
@@ -126,6 +130,17 @@ def normalize_runtime_mode(value: Optional[str]) -> str:
         return "simulated"
     if text not in RUNTIME_MODES:
         raise ConfigurationError(f"Unsupported runtime mode '{value}'.")
+    return text
+
+
+def normalize_role(value: Optional[str]) -> str:
+    """Validate and canonicalize the simulator role."""
+
+    text = "originator" if value is None else str(value).strip().lower()
+    if not text:
+        return "originator"
+    if text not in SIMULATOR_ROLES:
+        raise ConfigurationError(f"Unsupported simulator role '{value}'.")
     return text
 
 
@@ -244,6 +259,7 @@ class AssemblyDefinition:
     direction: str
     size_bits: int = 0
     signals: List[SignalDefinition] = field(default_factory=list)
+    production_interval_ms: Optional[int] = None
 
     @classmethod
     def from_dict(cls, raw: Dict[str, Any]) -> "AssemblyDefinition":
@@ -268,22 +284,58 @@ class AssemblyDefinition:
             if size_bits < 0:
                 raise ConfigurationError(f"Assembly '{name}' cannot have a negative size.")
         signals = [SignalDefinition.from_dict(sig) for sig in raw.get("signals", [])]
+        interval_ms: Optional[int] = None
+        if "production_interval_ms" in raw:
+            try:
+                candidate = raw["production_interval_ms"]
+                interval_ms = int(str(candidate)) if candidate is not None else None
+            except (TypeError, ValueError) as exc:  # pragma: no cover - defensive
+                raise ConfigurationError(
+                    f"Assembly '{name}' has invalid production interval '{raw['production_interval_ms']}'."
+                ) from exc
+            if interval_ms is not None and interval_ms < 0:
+                raise ConfigurationError(
+                    f"Assembly '{name}' cannot have a negative production interval."
+                )
+        elif "production_interval" in raw:
+            try:
+                candidate = raw["production_interval"]
+                interval_ms = int(float(str(candidate)) * 1000)
+            except (TypeError, ValueError) as exc:  # pragma: no cover - defensive
+                raise ConfigurationError(
+                    f"Assembly '{name}' has invalid production interval '{raw['production_interval']}'."
+                ) from exc
+            if interval_ms is not None and interval_ms < 0:
+                raise ConfigurationError(
+                    f"Assembly '{name}' cannot have a negative production interval."
+                )
         return cls(
             assembly_id=assembly_id,
             name=name,
             direction=str(direction),
             size_bits=size_bits,
             signals=signals,
+            production_interval_ms=interval_ms,
         )
 
     def to_dict(self) -> Dict[str, Any]:
-        return {
+        payload: Dict[str, Any] = {
             "id": self.assembly_id,
             "name": self.name,
             "direction": self.direction,
             "size_bits": self.size_bits,
             "signals": [signal.to_dict() for signal in self.signals],
         }
+        if self.production_interval_ms is not None:
+            payload["production_interval_ms"] = self.production_interval_ms
+        return payload
+
+    def production_interval_seconds(self) -> float:
+        """Return the configured production interval in seconds."""
+
+        if self.production_interval_ms is None or self.production_interval_ms <= 0:
+            return 0.0
+        return self.production_interval_ms / 1000.0
 
     def iter_signals(self) -> Iterable[SignalDefinition]:
         """Iterate over contained signals."""
@@ -363,6 +415,10 @@ class SimulatorConfiguration:
     allowed_hosts: Tuple[str, ...] = field(default_factory=tuple)
     allow_external: bool = False
     assemblies: List[AssemblyDefinition] = field(default_factory=list)
+    role: str = "originator"
+    listener_host: str = "0.0.0.0"
+    listener_port: int = 44818
+    listener_interface: Optional[str] = None
 
     def max_connection_size_bytes(self) -> int:
         """Return the maximum assembly size in bytes for forward-open sizing."""
@@ -641,6 +697,19 @@ class SimulatorConfiguration:
             allowed_hosts_raw = raw.get("allowed_hosts")
         if not allow_external and "allow_external" in raw:
             allow_external = bool(raw.get("allow_external", False))
+        listener_raw = raw.get("listener", {})
+        if listener_raw is None:
+            listener_raw = {}
+        listener_host = listener_raw.get("host", listener_raw.get("address", "0.0.0.0")) or "0.0.0.0"
+        listener_port_raw = listener_raw.get("port", 44818)
+        try:
+            listener_port = int(listener_port_raw)
+        except (TypeError, ValueError) as exc:  # pragma: no cover - defensive
+            raise ConfigurationError("Listener port must be an integer.") from exc
+        listener_interface = listener_raw.get("interface") or listener_raw.get("network_interface")
+
+        role = normalize_role(raw.get("role"))
+
         return cls(
             name=str(name),
             target_ip=str(target_ip),
@@ -653,6 +722,10 @@ class SimulatorConfiguration:
             assemblies=assemblies,
             allowed_hosts=parse_allowed_hosts(allowed_hosts_raw),
             allow_external=allow_external,
+            role=role,
+            listener_host=str(listener_host),
+            listener_port=listener_port,
+            listener_interface=str(listener_interface) if listener_interface else None,
         )
 
     def to_dict(self) -> Dict[str, Any]:
@@ -670,6 +743,12 @@ class SimulatorConfiguration:
             },
             "metadata": self.metadata,
             "assemblies": [assembly.to_dict() for assembly in self.assemblies],
+            "role": self.role,
+            "listener": {
+                "host": self.listener_host,
+                "port": self.listener_port,
+                "interface": self.listener_interface,
+            },
         }
 
     @property
@@ -679,6 +758,15 @@ class SimulatorConfiguration:
         if not self.allowed_hosts:
             return ""
         return ", ".join(self.allowed_hosts)
+
+    def default_production_interval_seconds(self) -> float:
+        """Return a representative production interval for cyclic updates."""
+
+        intervals = [assembly.production_interval_seconds() for assembly in self.assemblies]
+        positive = [interval for interval in intervals if interval > 0]
+        if not positive:
+            return 0.1
+        return min(positive)
 
     def find_assembly(self, assembly_id: int) -> AssemblyDefinition:
         for assembly in self.assemblies:

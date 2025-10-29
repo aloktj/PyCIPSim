@@ -103,6 +103,8 @@
       details.add-assembly input[type="number"],
       details.add-assembly select { width: 10rem; }
       .padding-row { background: #f9f9f9; color: #555; font-style: italic; }
+      .target-connections { margin-top: 1rem; }
+      .connection-table { margin-top: 0.5rem; }
     </style>
   </head>
   <body>
@@ -163,6 +165,15 @@
           <div class="target-form">
             <form method="post" action="/configs/{{ current.name }}/target">
               <div class="inline-field">
+                <label>Simulator Role
+                  <select name="role" {% if is_running %}disabled{% endif %}>
+                    {% for role in simulator_roles %}
+                      <option value="{{ role }}" {% if current.role == role %}selected{% endif %}>{{ role|capitalize }}</option>
+                    {% endfor %}
+                  </select>
+                </label>
+              </div>
+              <div class="inline-field">
                 <label>Target IP
                   <input type="text" name="target_ip" value="{{ current.target_ip }}" {% if is_running %}disabled{% endif %} />
                 </label>
@@ -183,6 +194,26 @@
                     <option value="" {% if not current.network_interface %}selected{% endif %}>Auto</option>
                     {% for iface in network_interfaces %}
                       <option value="{{ iface.name }}" {% if current.network_interface == iface.name %}selected{% endif %}>{{ iface.label }}</option>
+                    {% endfor %}
+                  </select>
+                </label>
+              </div>
+              <div class="inline-field">
+                <label>Listener Host
+                  <input type="text" name="listener_host" value="{{ current.listener_host }}" {% if is_running %}disabled{% endif %} />
+                </label>
+              </div>
+              <div class="inline-field">
+                <label>Listener Port
+                  <input type="number" name="listener_port" value="{{ current.listener_port }}" min="0" max="65535" {% if is_running %}disabled{% endif %} />
+                </label>
+              </div>
+              <div class="inline-field">
+                <label>Listener Interface
+                  <select name="listener_interface" {% if is_running %}disabled{% endif %}>
+                    <option value="" {% if not current.listener_interface %}selected{% endif %}>Auto</option>
+                    {% for iface in network_interfaces %}
+                      <option value="{{ iface.name }}" {% if current.listener_interface == iface.name %}selected{% endif %}>{{ iface.label }}</option>
                     {% endfor %}
                   </select>
                 </label>
@@ -220,10 +251,54 @@
                 <strong>Simulated</strong> (no network connections are opened)
               {% endif %}.
             </p>
+            <p class="disabled-note">
+              Simulator role is <strong>{{ current.role|capitalize }}</strong>
+              {% if current.role == 'target' %}
+                (listener {{ current.listener_host }}:{{ active.server.tcp_port if active and active.server else current.listener_port }})
+              {% endif %}.
+            </p>
             {% if is_running %}
               <p class="disabled-note">Target fields are locked while the simulator is running.</p>
             {% endif %}
           </div>
+
+          {% if active and active.role == 'target' %}
+            <section class="target-connections">
+              <h3>Active Target Connections</h3>
+              {% if active_connections %}
+                <table class="connection-table">
+                  <thead>
+                    <tr>
+                      <th>Session</th>
+                      <th>Serial</th>
+                      <th>Vendor</th>
+                      <th>Originator</th>
+                      <th>O→T Conn ID</th>
+                      <th>T→O Conn ID</th>
+                      <th>O→T RPI (µs)</th>
+                      <th>T→O RPI (µs)</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {% for conn in active_connections %}
+                      <tr>
+                        <td>{{ conn.session_handle }}</td>
+                        <td>{{ conn.connection_serial }}</td>
+                        <td>{{ conn.vendor_id }}</td>
+                        <td>{{ conn.originator_serial }}</td>
+                        <td>{{ conn.o_to_t_connection_id }}</td>
+                        <td>{{ conn.t_to_o_connection_id }}</td>
+                        <td>{{ conn.o_to_t_rpi }}</td>
+                        <td>{{ conn.t_to_o_rpi }}</td>
+                      </tr>
+                    {% endfor %}
+                  </tbody>
+                </table>
+              {% else %}
+                <p class="disabled-note">No active connections have been established yet.</p>
+              {% endif %}
+            </section>
+          {% endif %}
 
           {% set fo_effective = forward_open_effective or {} %}
           {% set fo_overrides = forward_open_overrides or {} %}
@@ -379,6 +454,9 @@
                           <option value="input" {% if direction_key == 'input' %}selected{% endif %}>Input</option>
                         </select>
                       </label>
+                      <label>Production Interval (ms)
+                        <input type="number" name="production_interval" min="0" />
+                      </label>
                       <button type="submit">Add Assembly</button>
                     </form>
                   </details>
@@ -391,7 +469,7 @@
                   <article class="assembly-card">
                     <div class="assembly-header">
                       <h4>
-                        Assembly {{ assembly.name }} (#{{ assembly.assembly_id }}{% if assembly.size_bits %}, {{ assembly.size_bits }} bits{% endif %})
+                        Assembly {{ assembly.name }} (#{{ assembly.assembly_id }}{% if assembly.size_bits %}, {{ assembly.size_bits }} bits{% endif %}{% if assembly.production_interval_ms %}, Interval {{ assembly.production_interval_ms }} ms{% endif %})
                       </h4>
                       <div class="assembly-controls">
                         <form
@@ -411,6 +489,9 @@
                               <option value="output" {% if direction_value not in ['input', 'in'] %}selected{% endif %}>Output</option>
                               <option value="input" {% if direction_value in ['input', 'in'] %}selected{% endif %}>Input</option>
                             </select>
+                          </label>
+                          <label>Production Interval (ms)
+                            <input type="number" name="production_interval" value="{{ assembly.production_interval_ms or '' }}" min="0" {% if is_running %}disabled{% endif %} />
                           </label>
                           <button type="submit" {% if is_running %}disabled{% endif %}>Save Assembly</button>
                         </form>
@@ -435,9 +516,12 @@
                                   <option value="output" {% if direction_key == 'output' %}selected{% endif %}>Output</option>
                                   <option value="input" {% if direction_key == 'input' %}selected{% endif %}>Input</option>
                                 </select>
-                                </label>
-                                <button type="submit">Add Assembly</button>
-                              </form>
+                              </label>
+                              <label>Production Interval (ms)
+                                <input type="number" name="production_interval" min="0" />
+                              </label>
+                              <button type="submit">Add Assembly</button>
+                            </form>
                             </details>
                             <form
                               method="post"

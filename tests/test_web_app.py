@@ -82,21 +82,24 @@ def manager(store: ConfigurationStore):
     manager.stop()
 
 
-def _scenario_payload(name: str = "WebConfig") -> dict:
+def _scenario_payload(name: str = "WebConfig", role: str = "originator") -> dict:
     return {
         "name": name,
+        "role": role,
         "target": {
             "ip": "10.10.10.10",
             "port": 44818,
             "interface": "eth0",
             "mode": "live",
         },
+        "listener": {"host": "0.0.0.0", "port": 44818},
         "assemblies": [
             {
                 "id": 200,
                 "name": "Outputs",
                 "direction": "output",
                 "size_bits": 8,
+                "production_interval_ms": 100,
                 "signals": [
                     {"name": "SigA", "offset": 0, "type": "BOOL", "value": "0"},
                 ],
@@ -121,11 +124,15 @@ def test_upload_and_start_flow(
     first = list(store.list())[0]
     assert first.name == "WebConfig"
     assert first.network_interface == "eth0"
+    assert first.role == "originator"
+    assert first.listener_host == "0.0.0.0"
 
     start_response = client.post("/configs/WebConfig/start", follow_redirects=False)
     assert start_response.status_code == 303
-    assert manager.active() is not None
-    assert manager.active().runtime is not None
+    active = manager.active()
+    assert active is not None
+    assert active.role == "originator"
+    assert active.runtime is not None
 
     value_response = client.post(
         "/configs/WebConfig/assemblies/200/signals/SigA/value",
@@ -165,6 +172,10 @@ def test_update_target_via_web(
             "runtime_mode": "simulated",
             "allowed_hosts": "192.168.1.100, example.local",
             "allow_external": "on",
+            "role": "target",
+            "listener_host": "127.0.0.1",
+            "listener_port": "45000",
+            "listener_interface": "eth0",
         },
         follow_redirects=False,
     )
@@ -176,6 +187,42 @@ def test_update_target_via_web(
     assert refreshed.runtime_mode == "simulated"
     assert refreshed.allowed_hosts == ("192.168.1.100", "example.local")
     assert refreshed.allow_external is True
+    assert refreshed.role == "target"
+    assert refreshed.listener_host == "127.0.0.1"
+    assert refreshed.listener_port == 45000
+    assert refreshed.listener_interface == "eth0"
+
+
+def test_start_target_role_uses_enip_server(
+    store: ConfigurationStore, manager: SimulatorManager
+) -> None:
+    payload = _scenario_payload(role="target")
+    payload["listener"] = {"host": "127.0.0.1", "port": 0}
+    payload["assemblies"].append(
+        {
+            "id": 201,
+            "name": "Inputs",
+            "direction": "input",
+            "size_bits": 8,
+            "production_interval_ms": 100,
+        }
+    )
+    config = SimulatorConfiguration.from_dict(payload)
+    store.upsert(config)
+    app = get_app(store=store, manager=manager)
+    client = TestClient(app)
+
+    response = client.post("/configs/WebConfig/start", follow_redirects=False)
+    assert response.status_code == 303
+
+    active = manager.active()
+    assert active is not None
+    assert active.role == "target"
+    assert active.server is not None
+    assert active.server.tcp_port != 0
+    assert manager.active_connections() == []
+
+    manager.stop()
 
 
 def test_update_forward_open_via_web(
