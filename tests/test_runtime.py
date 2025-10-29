@@ -1,15 +1,21 @@
 from __future__ import annotations
 
+import contextlib
 import copy
+import socket
 
+from pycipsim.config_store import ConfigurationStore
 from pycipsim.configuration import (
     AssemblyDefinition,
     SignalDefinition,
     SimulatorConfiguration,
     build_assembly_payload,
+    parse_assembly_payload,
 )
 from pycipsim.device import ServiceResponse
 from pycipsim.runtime import CIPIORuntime
+from pycipsim.target import CIPTargetRuntime
+from pycipsim.target_protocol import MSG_DATA, TargetMessage
 
 
 class DummySession:
@@ -45,6 +51,15 @@ def _make_config(*assemblies: AssemblyDefinition) -> SimulatorConfiguration:
         target_ip="127.0.0.1",
         assemblies=list(assemblies),
     )
+
+
+def _reserve_udp_port() -> int:
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        sock.bind(("", 0))
+        return sock.getsockname()[1]
+    finally:
+        sock.close()
 
 
 def test_runtime_pushes_updated_outputs() -> None:
@@ -116,3 +131,65 @@ def test_runtime_updates_store_with_received_inputs() -> None:
     assert request.tag_path == "assembly/200"
 
     assert store.calls == [("DemoConfig", 0xC8, {"InValue": "321"}, False)]
+
+
+def test_target_runtime_multicast_broadcast(tmp_path) -> None:
+    group = "239.255.0.1"
+    port = _reserve_udp_port()
+
+    input_signal = SignalDefinition(
+        name="InValue",
+        offset=0,
+        signal_type="UINT",
+        value="123",
+        size_bits=16,
+    )
+    input_assembly = AssemblyDefinition(
+        assembly_id=0xC9,
+        name="Inputs",
+        direction="input",
+        size_bits=16,
+        signals=[input_signal],
+    )
+    input_assembly.rebuild_padding()
+
+    store = ConfigurationStore(storage_path=tmp_path / "config.json")
+    config = SimulatorConfiguration(
+        name="MulticastDemo",
+        target_ip="127.0.0.1",
+        target_port=port,
+        receive_address=group,
+        multicast=True,
+        assemblies=[input_assembly],
+    )
+    store.upsert(config)
+
+    runtime = CIPTargetRuntime(config, store, cycle_interval=0.05)
+    runtime.start()
+    listener = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        listener.bind(("", port))
+        membership = socket.inet_aton(group) + socket.inet_aton("127.0.0.1")
+        listener.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, membership)
+        listener.settimeout(2.0)
+
+        # Drain the initial broadcast payload to ensure the runtime is active.
+        initial_payload, _ = listener.recvfrom(4096)
+        initial_message = TargetMessage.decode(initial_payload)
+        assert initial_message.message_type == MSG_DATA
+
+        store.update_assembly_values("MulticastDemo", input_assembly.assembly_id, {"InValue": "999"})
+        runtime.notify_output_update()
+
+        payload, _ = listener.recvfrom(4096)
+        message = TargetMessage.decode(payload)
+        assert message.message_type == MSG_DATA
+        assert message.assembly_id == input_assembly.assembly_id
+        decoded = parse_assembly_payload(config.find_assembly(input_assembly.assembly_id), message.payload)
+        assert decoded["InValue"] == "999"
+    finally:
+        with contextlib.suppress(OSError):
+            listener.setsockopt(socket.IPPROTO_IP, socket.IP_DROP_MEMBERSHIP, membership)
+        listener.close()
+        runtime.stop()

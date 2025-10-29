@@ -176,9 +176,96 @@ class PyCipSimClientTransport:
         self._stop_event = threading.Event()
         self._server = (config.ip_address, config.port)
         self._update_callback: Optional[Callable[[int, bytes], None]] = None
+        self._multicast_memberships: List[bytes] = []
 
     def register_update_listener(self, callback: Callable[[int, bytes], None]) -> None:
         self._update_callback = callback
+
+    def _resolve_multicast_groups(self) -> List[str]:
+        metadata = self._config.metadata or {}
+        groups = metadata.get("multicast_groups")
+        resolved: List[str] = []
+        if isinstance(groups, str):
+            resolved = [grp.strip() for grp in groups.split(",") if grp.strip()]
+        elif isinstance(groups, (list, tuple, set)):
+            resolved = [str(grp).strip() for grp in groups if str(grp).strip()]
+        elif metadata.get("receive_address"):
+            address = str(metadata.get("receive_address") or "").strip()
+            if address:
+                resolved = [address]
+        return [grp for grp in resolved if grp]
+
+    def _resolve_multicast_port(self) -> int:
+        metadata = self._config.metadata or {}
+        port_value = metadata.get("multicast_port")
+        if isinstance(port_value, (int, float)):
+            try:
+                port = int(port_value)
+            except (TypeError, ValueError):
+                port = 0
+        elif isinstance(port_value, str) and port_value.strip():
+            try:
+                port = int(port_value.strip(), 0)
+            except ValueError:
+                port = 0
+        else:
+            port = 0
+        if port <= 0 or port >= 65536:
+            port = int(self._config.port)
+        return port
+
+    def _join_multicast_groups(self, sock: socket.socket) -> None:
+        self._multicast_memberships = []
+        groups = self._resolve_multicast_groups()
+        if not groups:
+            return
+
+        metadata = self._config.metadata or {}
+        interface_name = str(metadata.get("multicast_interface") or "").strip()
+        interface_ip: Optional[str] = None
+        if interface_name:
+            interface_ip = _find_interface_ipv4(interface_name)
+            if interface_ip is None:
+                _LOGGER.warning(
+                    "Multicast interface '%s' has no IPv4 address; falling back to session interface.",
+                    interface_name,
+                )
+        if interface_ip is None:
+            source = self._config.resolve_source_address()
+            if source:
+                interface_ip = source[0]
+        if interface_ip is None and self._config.network_interface:
+            interface_ip = _find_interface_ipv4(self._config.network_interface)
+        if not interface_ip:
+            interface_ip = "0.0.0.0"
+
+        try:
+            interface_bytes = socket.inet_aton(interface_ip)
+        except OSError:
+            interface_bytes = socket.inet_aton("0.0.0.0")
+            interface_ip = "0.0.0.0"
+
+        for group in groups:
+            try:
+                group_bytes = socket.inet_aton(group)
+            except OSError:
+                _LOGGER.warning("Invalid multicast group '%s'; skipping subscription.", group)
+                continue
+            membership = group_bytes + interface_bytes
+            try:
+                sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, membership)
+            except OSError as exc:
+                _LOGGER.warning(
+                    "Unable to join multicast group %s on %s: %s", group, interface_ip, exc
+                )
+                continue
+            self._multicast_memberships.append(membership)
+
+    def _leave_multicast_groups(self, sock: socket.socket) -> None:
+        for membership in self._multicast_memberships:
+            with contextlib.suppress(OSError):
+                sock.setsockopt(socket.IPPROTO_IP, socket.IP_DROP_MEMBERSHIP, membership)
+        self._multicast_memberships = []
 
     # ------------------------------------------------------------------
     # Transport lifecycle
@@ -192,12 +279,16 @@ class PyCipSimClientTransport:
         source = self._config.resolve_source_address()
         if source:
             command_sock.bind(source)
+        multicast_groups = self._resolve_multicast_groups()
         data_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         data_sock.settimeout(0.5)
-        if source:
-            data_sock.bind((source[0], 0))
-        else:
-            data_sock.bind(("", 0))
+        if multicast_groups:
+            data_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        bind_host = source[0] if source else ""
+        bind_port = self._resolve_multicast_port() if multicast_groups else 0
+        data_sock.bind((bind_host, bind_port))
+        if multicast_groups:
+            self._join_multicast_groups(data_sock)
         self._command_sock = command_sock
         self._data_sock = data_sock
         data_port = data_sock.getsockname()[1]
@@ -228,6 +319,8 @@ class PyCipSimClientTransport:
             with contextlib.suppress(OSError):
                 self._command_sock.close()
         if self._data_sock is not None:
+            with contextlib.suppress(OSError):
+                self._leave_multicast_groups(self._data_sock)
             with contextlib.suppress(OSError):
                 self._data_sock.close()
         self._command_sock = None
