@@ -3,17 +3,21 @@ from __future__ import annotations
 
 import contextlib
 import json
+import logging
 import socket
 import threading
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 from urllib.parse import urlencode
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
+
+logger = logging.getLogger(__name__)
+
 
 from ..config_store import (
     ConfigurationError,
@@ -37,6 +41,74 @@ class ActiveSimulation:
     handshake: HandshakeResult
     started_at: datetime
     runtime: Optional[Any]
+
+
+@dataclass(frozen=True)
+class LogEntry:
+    """Captured log record for display or API streaming."""
+
+    id: int
+    level: str
+    text: str
+
+
+class LogBufferHandler(logging.Handler):
+    """Capture application log messages for display in the web UI."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._lock = threading.RLock()
+        self._entries: list[LogEntry] = []
+        self._next_id = 1
+
+    def emit(self, record: logging.LogRecord) -> None:  # pragma: no cover - exercised indirectly
+        try:
+            message = self.format(record)
+        except Exception:  # pragma: no cover - defensive
+            message = record.getMessage()
+        entry = LogEntry(id=self._next_id, level=record.levelname, text=message)
+        with self._lock:
+            self._entries.append(entry)
+            self._next_id += 1
+
+    def entries(self) -> list[LogEntry]:
+        with self._lock:
+            return list(self._entries)
+
+    def clear(self) -> None:
+        with self._lock:
+            self._entries.clear()
+            self._next_id = 1
+
+    def entries_since(self, last_id: Optional[int]) -> Tuple[list[LogEntry], Optional[int]]:
+        with self._lock:
+            if last_id is None:
+                subset = list(self._entries)
+            else:
+                subset = [entry for entry in self._entries if entry.id > last_id]
+            next_last = self._entries[-1].id if self._entries else last_id
+        return subset, next_last
+
+
+_LOG_HANDLER: Optional[LogBufferHandler] = None
+
+
+def get_log_buffer_handler() -> LogBufferHandler:
+    """Return the singleton log buffer handler, creating it if necessary."""
+
+    global _LOG_HANDLER
+    if _LOG_HANDLER is None:
+        handler = LogBufferHandler()
+        handler.setLevel(logging.DEBUG)
+        handler.setFormatter(
+            logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s", "%Y-%m-%d %H:%M:%S")
+        )
+        root_logger = logging.getLogger()
+        root_logger.addHandler(handler)
+        if root_logger.level > logging.DEBUG:
+            root_logger.setLevel(logging.DEBUG)
+        _LOG_HANDLER = handler
+    return _LOG_HANDLER
 
 
 class SimulatorManager:
@@ -254,11 +326,19 @@ def get_app(
 ) -> FastAPI:
     store = store or ConfigurationStore()
     manager = manager or SimulatorManager()
+    log_handler = get_log_buffer_handler()
     templates = _templates()
     app = FastAPI(title="PyCIPSim Web")
 
-    def redirect(path: str, message: Optional[str] = None, error: Optional[str] = None) -> RedirectResponse:
+    def redirect(
+        path: str,
+        message: Optional[str] = None,
+        error: Optional[str] = None,
+        selected: Optional[str] = None,
+    ) -> RedirectResponse:
         query = {}
+        if selected:
+            query["selected"] = selected
         if message:
             query["message"] = message
         if error:
@@ -278,6 +358,11 @@ def get_app(
                 current = store.get(selected)
             except ConfigurationNotFoundError:
                 current = None
+        if current is None and active:
+            try:
+                current = store.get(active.configuration_name)
+            except ConfigurationNotFoundError:
+                current = None
         if current is None and configs:
             current = configs[0]
         assembly_groups = {"output": [], "input": []}
@@ -293,6 +378,9 @@ def get_app(
                 last_handshake = manager.last_handshake()
                 if last_handshake and last_handshake[0] == current.name:
                     handshake_result = last_handshake[1]
+        log_entries = log_handler.entries()
+        last_log_id = log_entries[-1].id if log_entries else None
+
         return templates.TemplateResponse(
             request,
             "index.html",
@@ -307,8 +395,18 @@ def get_app(
                 "handshake_labels": {phase.value: label for phase, label in _HANDSHAKE_LABELS.items()},
                 "message": message,
                 "error": error,
+                "log_entries": log_entries,
+                "last_log_id": last_log_id,
             },
         )
+
+    @app.get("/logs")
+    async def stream_logs(since: Optional[int] = None) -> Dict[str, Any]:
+        entries, last_id = log_handler.entries_since(since)
+        return {
+            "entries": [asdict(entry) for entry in entries],
+            "last_id": last_id,
+        }
 
     @app.post("/configs/upload")
     async def upload_config(file: UploadFile = File(...)) -> RedirectResponse:
@@ -317,41 +415,87 @@ def get_app(
             data = json.loads(payload.decode("utf-8"))
             config = SimulatorConfiguration.from_dict(data)
         except ConfigurationError as exc:
+            logger.exception("Invalid configuration upload rejected")
             return redirect("/", error=f"Invalid configuration: {exc}")
         except json.JSONDecodeError as exc:
+            logger.exception("Uploaded configuration is not valid JSON")
             return redirect("/", error=f"Configuration is not valid JSON: {exc}")
+        logger.info("Configuration '%s' uploaded", config.name)
         store.upsert(config)
-        return redirect("/", message=f"Configuration '{config.name}' uploaded.")
+        return redirect(
+            "/",
+            message=f"Configuration '{config.name}' uploaded.",
+            selected=config.name,
+        )
 
     @app.post("/configs/{name}/start")
     async def start_simulator(name: str) -> RedirectResponse:
         try:
             config = store.get(name)
         except ConfigurationNotFoundError:
+            logger.error("Start requested for missing configuration '%s'", name)
             raise HTTPException(status_code=404, detail="Configuration not found")
         try:
+            logger.info("Starting simulator for configuration '%s'", name)
             handshake = manager.start(config, store)
         except RuntimeError as exc:
-            return redirect("/", error=str(exc))
+            logger.error("Failed to start simulator for '%s': %s", name, exc)
+            return redirect("/", error=str(exc), selected=name)
         if not handshake.success:
-            return redirect("/", error=_format_handshake_failure(handshake))
+            formatted = _format_handshake_failure(handshake)
+            logger.error("Handshake failed for '%s': %s", name, formatted)
+            return redirect(
+                "/",
+                error=formatted,
+                selected=name,
+            )
+        logger.info(
+            "Simulator started for '%s' in %.2fms",
+            name,
+            handshake.duration_ms,
+        )
         return redirect(
             "/",
             message=f"Simulator started for {name}. Handshake duration {handshake.duration_ms:.2f}ms.",
+            selected=name,
         )
+
+    @app.post("/configs/{name}/delete")
+    async def delete_configuration(name: str) -> RedirectResponse:
+        try:
+            store.get(name)
+        except ConfigurationNotFoundError:
+            logger.error("Delete requested for missing configuration '%s'", name)
+            return redirect("/", error="Configuration not found")
+        try:
+            manager.ensure_config_mutable(name)
+        except RuntimeError as exc:
+            logger.warning("Cannot delete running configuration '%s'", name)
+            return redirect("/", error=str(exc), selected=name)
+        logger.info("Deleting configuration '%s'", name)
+        store.delete(name)
+        return redirect("/", message=f"Configuration '{name}' deleted.")
 
     @app.post("/stop")
     async def stop_simulator() -> RedirectResponse:
+        active = manager.active()
+        selected = active.configuration_name if active else None
         manager.stop()
-        return redirect("/", message="Simulator stopped.")
+        if selected:
+            logger.info("Simulator stopped for configuration '%s'", selected)
+        else:
+            logger.info("Stop requested but no active simulation was running")
+        return redirect("/", message="Simulator stopped.", selected=selected)
 
     @app.post("/configs/{name}/select")
     async def select_configuration(name: str) -> RedirectResponse:
         try:
             store.get(name)
         except ConfigurationNotFoundError:
+            logger.error("Selection requested for missing configuration '%s'", name)
             return redirect("/", error="Configuration not found")
-        return redirect(f"/?selected={name}")
+        logger.info("Configuration '%s' selected in UI", name)
+        return redirect("/", selected=name)
 
     @app.post("/configs/{name}/assemblies/{assembly_id}/signals/{signal_name}/value")
     async def update_signal_value(
@@ -366,11 +510,36 @@ def get_app(
             store.update_signal_value(name, assembly_id, signal_name, payload)
             manager.notify_output_update(name)
         except ConfigurationNotFoundError:
+            logger.error(
+                "Signal update requested for missing configuration '%s'", name
+            )
             return redirect("/", error="Configuration not found")
         except ConfigurationError as exc:
-            return redirect("/", error=str(exc))
+            logger.error(
+                "Signal update failed for '%s' assembly %s signal %s: %s",
+                name,
+                assembly_id,
+                signal_name,
+                exc,
+            )
+            return redirect("/", error=str(exc), selected=name)
         message = "Signal value cleared." if action == "clear" else f"Signal '{signal_name}' value updated."
-        return redirect("/", message=message)
+        if action == "clear":
+            logger.info(
+                "Cleared signal %s in assembly %s for '%s'",
+                signal_name,
+                assembly_id,
+                name,
+            )
+        else:
+            logger.info(
+                "Updated signal %s in assembly %s for '%s' to '%s'",
+                signal_name,
+                assembly_id,
+                name,
+                value,
+            )
+        return redirect("/", message=message, selected=name)
 
     @app.post("/configs/{name}/target")
     async def update_target(
@@ -403,12 +572,16 @@ def get_app(
                 allow_external=allow_external_flag,
             )
         except RuntimeError as exc:
-            return redirect("/", error=str(exc))
+            logger.warning("Target update blocked for running configuration '%s'", name)
+            return redirect("/", error=str(exc), selected=name)
         except ConfigurationNotFoundError:
+            logger.error("Target update requested for missing configuration '%s'", name)
             return redirect("/", error="Configuration not found")
         except ConfigurationError as exc:
-            return redirect("/", error=str(exc))
-        return redirect("/", message=f"Target for '{name}' updated.")
+            logger.error("Target update failed for '%s': %s", name, exc)
+            return redirect("/", error=str(exc), selected=name)
+        logger.info("Target connection details updated for '%s'", name)
+        return redirect("/", message=f"Target for '{name}' updated.", selected=name)
 
     @app.post("/configs/{name}/assemblies/{assembly_id}/signals/{signal_name}/details")
     async def update_signal_details(
@@ -430,12 +603,27 @@ def get_app(
                 signal_type=signal_type,
             )
         except RuntimeError as exc:
-            return redirect("/", error=str(exc))
+            logger.warning("Signal metadata update blocked for running configuration '%s'", name)
+            return redirect("/", error=str(exc), selected=name)
         except ConfigurationNotFoundError:
+            logger.error("Signal metadata update requested for missing configuration '%s'", name)
             return redirect("/", error="Configuration not found")
         except ConfigurationError as exc:
-            return redirect("/", error=str(exc))
-        return redirect("/", message=f"Signal '{signal_name}' updated.")
+            logger.error(
+                "Signal metadata update failed for '%s' assembly %s signal %s: %s",
+                name,
+                assembly_id,
+                signal_name,
+                exc,
+            )
+            return redirect("/", error=str(exc), selected=name)
+        logger.info(
+            "Signal '%s' in assembly %s updated for '%s'",
+            signal_name,
+            assembly_id,
+            name,
+        )
+        return redirect("/", message=f"Signal '{signal_name}' updated.", selected=name)
 
     @app.post("/configs/{name}/assemblies/{assembly_id}/metadata")
     async def update_assembly_metadata(
@@ -455,13 +643,22 @@ def get_app(
                 size_bits=size_bits,
             )
         except RuntimeError as exc:
-            return redirect("/", error=str(exc))
+            logger.warning("Assembly metadata update blocked for running configuration '%s'", name)
+            return redirect("/", error=str(exc), selected=name)
         except ConfigurationNotFoundError:
+            logger.error("Assembly metadata update requested for missing configuration '%s'", name)
             return redirect("/", error="Configuration not found")
         except ConfigurationError as exc:
-            return redirect("/", error=str(exc))
+            logger.error("Assembly metadata update failed for '%s' assembly %s: %s", name, assembly_id, exc)
+            return redirect("/", error=str(exc), selected=name)
+        logger.info(
+            "Assembly '%s' (ID %s) updated for '%s'",
+            assembly.name,
+            assembly.assembly_id,
+            name,
+        )
         message = f"Assembly '{assembly.name}' updated."
-        return redirect("/", message=message)
+        return redirect("/", message=message, selected=name)
 
     @app.post("/configs/{name}/assemblies/add")
     async def add_assembly(
@@ -485,12 +682,26 @@ def get_app(
                 relative_assembly=relative_assembly or None,
             )
         except RuntimeError as exc:
-            return redirect("/", error=str(exc))
+            logger.warning("Add assembly blocked for running configuration '%s'", name)
+            return redirect("/", error=str(exc), selected=name)
         except ConfigurationNotFoundError:
+            logger.error("Add assembly requested for missing configuration '%s'", name)
             return redirect("/", error="Configuration not found")
         except ConfigurationError as exc:
-            return redirect("/", error=str(exc))
-        return redirect("/", message=f"Assembly '{assembly_name}' added.")
+            logger.error("Add assembly failed for '%s': %s", name, exc)
+            return redirect("/", error=str(exc), selected=name)
+        logger.info(
+            "Assembly '%s' (ID %s) added to '%s' at %s",
+            assembly_name,
+            assembly_id,
+            name,
+            position,
+        )
+        return redirect(
+            "/",
+            message=f"Assembly '{assembly_name}' added.",
+            selected=name,
+        )
 
     @app.post("/configs/{name}/assemblies/{assembly_id}/delete")
     async def remove_assembly(name: str, assembly_id: int) -> RedirectResponse:
@@ -498,12 +709,20 @@ def get_app(
             manager.ensure_config_mutable(name)
             store.remove_assembly(name, assembly_id)
         except RuntimeError as exc:
-            return redirect("/", error=str(exc))
+            logger.warning("Remove assembly blocked for running configuration '%s'", name)
+            return redirect("/", error=str(exc), selected=name)
         except ConfigurationNotFoundError:
+            logger.error("Remove assembly requested for missing configuration '%s'", name)
             return redirect("/", error="Configuration not found")
         except ConfigurationError as exc:
-            return redirect("/", error=str(exc))
-        return redirect("/", message=f"Assembly '{assembly_id}' removed.")
+            logger.error("Remove assembly failed for '%s' assembly %s: %s", name, assembly_id, exc)
+            return redirect("/", error=str(exc), selected=name)
+        logger.info("Assembly '%s' removed from '%s'", assembly_id, name)
+        return redirect(
+            "/",
+            message=f"Assembly '{assembly_id}' removed.",
+            selected=name,
+        )
 
     @app.post("/configs/{name}/assemblies/{assembly_id}/signals/add")
     async def add_signal(
@@ -527,12 +746,32 @@ def get_app(
                 relative_signal=relative_signal or None,
             )
         except RuntimeError as exc:
-            return redirect("/", error=str(exc))
+            logger.warning("Add signal blocked for running configuration '%s'", name)
+            return redirect("/", error=str(exc), selected=name)
         except ConfigurationNotFoundError:
+            logger.error("Add signal requested for missing configuration '%s'", name)
             return redirect("/", error="Configuration not found")
         except ConfigurationError as exc:
-            return redirect("/", error=str(exc))
-        return redirect("/", message=f"Signal '{new_name}' added.")
+            logger.error(
+                "Add signal failed for '%s' assembly %s signal %s: %s",
+                name,
+                assembly_id,
+                new_name,
+                exc,
+            )
+            return redirect("/", error=str(exc), selected=name)
+        logger.info(
+            "Signal '%s' added to assembly %s for '%s' at %s",
+            new_name,
+            assembly_id,
+            name,
+            position,
+        )
+        return redirect(
+            "/",
+            message=f"Signal '{new_name}' added.",
+            selected=name,
+        )
 
     @app.post("/configs/{name}/assemblies/{assembly_id}/signals/{signal_name}/delete")
     async def remove_signal(name: str, assembly_id: int, signal_name: str) -> RedirectResponse:
@@ -540,12 +779,31 @@ def get_app(
             manager.ensure_config_mutable(name)
             store.remove_signal(name, assembly_id, signal_name)
         except RuntimeError as exc:
-            return redirect("/", error=str(exc))
+            logger.warning("Remove signal blocked for running configuration '%s'", name)
+            return redirect("/", error=str(exc), selected=name)
         except ConfigurationNotFoundError:
+            logger.error("Remove signal requested for missing configuration '%s'", name)
             return redirect("/", error="Configuration not found")
         except ConfigurationError as exc:
-            return redirect("/", error=str(exc))
-        return redirect("/", message=f"Signal '{signal_name}' removed.")
+            logger.error(
+                "Remove signal failed for '%s' assembly %s signal %s: %s",
+                name,
+                assembly_id,
+                signal_name,
+                exc,
+            )
+            return redirect("/", error=str(exc), selected=name)
+        logger.info(
+            "Signal '%s' removed from assembly %s for '%s'",
+            signal_name,
+            assembly_id,
+            name,
+        )
+        return redirect(
+            "/",
+            message=f"Signal '{signal_name}' removed.",
+            selected=name,
+        )
 
     @app.get("/configs/{name}/export")
     async def export_configuration(name: str) -> Response:
