@@ -10,7 +10,7 @@ import time
 from dataclasses import dataclass
 from typing import Dict, Iterable, List, Optional, Tuple
 
-from .config_store import ConfigurationStore
+from .config_store import ConfigurationStore, ConfigurationNotFoundError
 from .configuration import (
     AssemblyDefinition,
     ConfigurationError,
@@ -229,14 +229,27 @@ class CIPTargetRuntime:
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
+    def _configuration_snapshot(self) -> SimulatorConfiguration:
+        """Return the latest configuration instance from the backing store."""
+
+        try:
+            configuration = self._store.get(self._config_name)
+        except ConfigurationNotFoundError:
+            return self._configuration
+        else:
+            self._configuration = configuration
+            return configuration
+
     def _input_assemblies(self) -> Iterable[AssemblyDefinition]:
-        for assembly in self._configuration.assemblies:
+        configuration = self._configuration_snapshot()
+        for assembly in configuration.assemblies:
             direction = (assembly.direction or "").lower()
             if direction in {"input", "in"}:
                 yield assembly
 
     def _output_assemblies(self) -> Iterable[AssemblyDefinition]:
-        for assembly in self._configuration.assemblies:
+        configuration = self._configuration_snapshot()
+        for assembly in configuration.assemblies:
             direction = (assembly.direction or "").lower()
             if direction in {"output", "out"}:
                 yield assembly
@@ -284,7 +297,7 @@ class CIPTargetRuntime:
 
     def _handle_get(self, assembly_id: int, addr: Tuple[str, int]) -> None:
         try:
-            assembly = self._configuration.find_assembly(assembly_id)
+            assembly = self._configuration_snapshot().find_assembly(assembly_id)
             payload = build_assembly_payload(assembly)
         except ConfigurationError as exc:
             _LOGGER.warning("GET for unknown assembly %s on '%s': %s", assembly_id, self._config_name, exc)
@@ -300,7 +313,7 @@ class CIPTargetRuntime:
 
     def _handle_set(self, assembly_id: int, data: bytes, addr: Tuple[str, int]) -> None:
         try:
-            assembly = self._configuration.find_assembly(assembly_id)
+            assembly = self._configuration_snapshot().find_assembly(assembly_id)
         except ConfigurationError as exc:
             _LOGGER.warning("SET for unknown assembly %s on '%s': %s", assembly_id, self._config_name, exc)
             error = TargetMessage.encode(
