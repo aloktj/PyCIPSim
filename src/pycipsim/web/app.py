@@ -24,6 +24,7 @@ from ..config_store import (
 from ..configuration import CIP_SIGNAL_TYPES
 from ..handshake import HandshakePhase, HandshakeResult, HandshakeStep, perform_handshake
 from ..runtime import CIPIORuntime
+from ..runtime.enip_target import ENIPTargetRuntime
 from ..target import CIPTargetRuntime
 from ..session import CIPSession, SessionConfig
 
@@ -98,11 +99,19 @@ class SimulatorManager:
                 handshake = HandshakeResult(success=True, steps=steps, duration_ms=0.0)
                 runtime: Optional[Any] = None
                 if should_run_runtime:
-                    runtime = CIPTargetRuntime(
-                        configuration=config,
-                        store=store,
-                        cycle_interval=self._cycle_interval,
-                    )
+                    transport_mode = (config.transport or "pycipsim").lower()
+                    if transport_mode == "enip":
+                        runtime = ENIPTargetRuntime(
+                            configuration=config,
+                            store=store,
+                            cycle_interval=self._cycle_interval,
+                        )
+                    else:
+                        runtime = CIPTargetRuntime(
+                            configuration=config,
+                            store=store,
+                            cycle_interval=self._cycle_interval,
+                        )
                     runtime.start()
                 self._last_handshake = (config.name, handshake)
                 self._active = ActiveSimulation(

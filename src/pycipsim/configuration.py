@@ -45,7 +45,7 @@ RUNTIME_MODES: tuple[str, ...] = ("simulated", "live")
 SIMULATOR_ROLES: tuple[str, ...] = ("originator", "target")
 
 # Transport implementations available for live originator sessions.
-TRANSPORT_MODES: tuple[str, ...] = ("pycomm3", "pycipsim")
+TRANSPORT_MODES: tuple[str, ...] = ("pycomm3", "pycipsim", "enip")
 
 
 # Nominal bit widths for well-known CIP signal types.
@@ -442,6 +442,18 @@ class SimulatorConfiguration:
         if not self.assemblies:
             return 0
         return max(_total_bytes(assembly.size_bits) for assembly in self.assemblies)
+
+    def default_production_interval_seconds(self) -> float:
+        """Return the smallest positive production interval among assemblies."""
+
+        intervals = [
+            assembly.production_interval_seconds()
+            for assembly in self.assemblies
+            if assembly.production_interval_seconds() > 0.0
+        ]
+        if not intervals:
+            return 0.0
+        return min(intervals)
 
     def build_forward_open_metadata(self) -> Optional[Dict[str, Any]]:
         """Compose metadata required for a Class-1 forward open."""

@@ -8,6 +8,7 @@ from .enip_server import (
     ENIPServer,
     ForwardOpenRequest,
 )
+from .enip_target import ENIPTargetRuntime
 
 __all__ = [
     "AssemblyHost",
@@ -15,5 +16,6 @@ __all__ = [
     "CIPIORuntime",
     "ConnectionManager",
     "ENIPServer",
+    "ENIPTargetRuntime",
     "ForwardOpenRequest",
 ]

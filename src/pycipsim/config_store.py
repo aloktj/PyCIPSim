@@ -258,6 +258,7 @@ class ConfigurationStore:
         new_id: str,
         direction: str,
         size_bits: Optional[str] = None,
+        production_interval: Optional[str] = None,
     ) -> AssemblyDefinition:
         with self._lock:
             configuration = self.get(name)
@@ -300,9 +301,21 @@ class ConfigurationStore:
                         raise ConfigurationError(
                             "Assembly size (bits) cannot be negative."
                         )
+                if production_interval is None:
+                    parsed_interval = assembly.production_interval_ms
+                else:
+                    try:
+                        parsed_interval = int(str(production_interval), 0)
+                    except (TypeError, ValueError) as exc:
+                        raise ConfigurationError(
+                            "Production interval must be an integer (milliseconds)."
+                        ) from exc
+                    if parsed_interval < 0:
+                        raise ConfigurationError("Production interval cannot be negative.")
                 assembly.assembly_id = parsed_id
                 assembly.direction = canonical_direction
                 assembly.size_bits = parsed_size
+                assembly.production_interval_ms = parsed_interval
                 assembly.rebuild_padding()
             except Exception:
                 assembly.signals = original_signals
@@ -323,6 +336,7 @@ class ConfigurationStore:
         size_bits: str,
         position: str = "end",
         relative_assembly: Optional[str] = None,
+        production_interval: Optional[str] = None,
     ) -> AssemblyDefinition:
         """Insert a new assembly into the configuration."""
 
@@ -359,11 +373,24 @@ class ConfigurationStore:
             if parsed_size < 0:
                 raise ConfigurationError("Assembly size (bits) cannot be negative.")
 
+            if production_interval is not None:
+                try:
+                    parsed_interval = int(str(production_interval), 0)
+                except (TypeError, ValueError) as exc:
+                    raise ConfigurationError(
+                        "Production interval must be an integer (milliseconds)."
+                    ) from exc
+                if parsed_interval < 0:
+                    raise ConfigurationError("Production interval cannot be negative.")
+            else:
+                parsed_interval = None
+
             new_assembly = AssemblyDefinition(
                 assembly_id=parsed_id,
                 name=assembly_name,
                 direction=canonical_direction,
                 size_bits=parsed_size,
+                production_interval_ms=parsed_interval,
                 signals=[],
             )
 
@@ -384,6 +411,97 @@ class ConfigurationStore:
             configuration.assemblies.insert(insert_index, new_assembly)
             self._persist()
             return new_assembly
+
+    def update_forward_open(self, name: str, overrides: Dict[str, Any]) -> Dict[str, Any]:
+        """Persist forward-open override metadata for a configuration."""
+
+        with self._lock:
+            configuration = self.get(name)
+            if not isinstance(overrides, dict):
+                raise ConfigurationError("Forward-open overrides must be provided as a mapping.")
+
+            def _parse_int(key: str, allow_empty: bool = False) -> Optional[int]:
+                if key not in overrides:
+                    return None
+                value = overrides[key]
+                if allow_empty and (value is None or str(value).strip() == ""):
+                    return None
+                try:
+                    parsed = int(str(value), 0)
+                except (TypeError, ValueError) as exc:
+                    raise ConfigurationError(f"Override '{key}' must be numeric.") from exc
+                if parsed < 0:
+                    raise ConfigurationError(f"Override '{key}' cannot be negative.")
+                return parsed
+
+            normalized: Dict[str, Any] = {}
+            int_fields = {
+                "application_class",
+                "application_instance",
+                "t_to_o_instance",
+                "o_to_t_instance",
+                "configuration_point",
+                "o_to_t_size",
+                "o_to_t_header_bytes",
+                "t_to_o_size",
+                "t_to_o_header_bytes",
+                "o_to_t_rpi_us",
+                "t_to_o_rpi_us",
+                "transport_type_trigger",
+                "timeout_multiplier",
+                "connection_serial",
+                "vendor_id",
+                "originator_serial",
+            }
+            for key in int_fields:
+                parsed = _parse_int(key, allow_empty=True)
+                if parsed is not None:
+                    normalized[key] = parsed
+
+            allowed_connection_types = {"point_to_point", "multicast"}
+            for key in ("o_to_t_connection_type", "t_to_o_connection_type"):
+                if key in overrides:
+                    text = str(overrides[key]).strip()
+                    if not text:
+                        raise ConfigurationError(f"Override '{key}' cannot be empty.")
+                    normalized_value = text.lower().replace("-", "_").replace(" ", "_")
+                    if normalized_value not in allowed_connection_types:
+                        options = ", ".join(sorted(allowed_connection_types))
+                        raise ConfigurationError(
+                            f"Override '{key}' must be one of {options}."
+                        )
+                    normalized[key] = normalized_value
+
+            if "connection_points" in overrides:
+                raw_points = overrides["connection_points"]
+                if isinstance(raw_points, str):
+                    items = [item.strip() for item in raw_points.split(",") if item.strip()]
+                elif isinstance(raw_points, (list, tuple, set)):
+                    items = list(raw_points)
+                else:
+                    raise ConfigurationError("Override 'connection_points' must be a sequence or string.")
+                parsed_points: List[int] = []
+                for index, item in enumerate(items):
+                    try:
+                        point = int(str(item), 0)
+                    except (TypeError, ValueError) as exc:
+                        raise ConfigurationError(
+                            f"Override 'connection_points[{index}]' must be numeric."
+                        ) from exc
+                    if point < 0:
+                        raise ConfigurationError("Forward-open connection points cannot be negative.")
+                    if point not in parsed_points:
+                        parsed_points.append(point)
+                normalized["connection_points"] = parsed_points
+
+            if "use_large_forward_open" in overrides:
+                value = str(overrides["use_large_forward_open"]).strip().lower()
+                normalized["use_large_forward_open"] = value in {"1", "true", "yes", "on"}
+
+            configuration.metadata.setdefault("forward_open", {})
+            configuration.metadata["forward_open"].update(normalized)
+            self._persist()
+            return dict(configuration.metadata["forward_open"])
 
     def remove_assembly(self, name: str, assembly_id: int) -> None:
         """Remove an assembly from the configuration."""

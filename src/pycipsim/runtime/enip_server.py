@@ -544,6 +544,37 @@ class ENIPServer:
             raise ValueError("CIP path truncated")
         request_path = payload[2 : 2 + path_bytes]
         request_data = payload[2 + path_bytes :]
+        if service == 0x52:  # Unconnected_Send
+            if len(request_data) < 4:
+                return self._build_service_response(service, status=0x13)
+            message_length = struct.unpack_from("<H", request_data, 2)[0]
+            offset = 4
+            message = request_data[offset : offset + message_length]
+            offset += message_length
+            if message_length % 2:
+                offset += 1
+            route_path = request_data[offset:]
+            if len(message) < 2:
+                return self._build_service_response(service, status=0x13)
+            nested_service = message[0]
+            nested_path_words = message[1]
+            nested_path_bytes = nested_path_words * 2
+            header_length = 2 + nested_path_bytes
+            if len(message) < header_length:
+                return self._build_service_response(service, status=0x04)
+            nested_path = message[2:header_length]
+            nested_data = message[header_length:]
+            nested_response = self._dispatch_explicit_service(
+                nested_service, nested_path, nested_data
+            )
+            payload = bytearray()
+            payload.extend(struct.pack("<H", len(nested_response)))
+            payload.extend(nested_response)
+            if len(nested_response) % 2:
+                payload.append(0x00)
+            if route_path:
+                payload.extend(route_path)
+            return self._build_service_response(service, payload=bytes(payload))
         if service in (_FORWARD_OPEN, _LARGE_FORWARD_OPEN):
             forward_request = self._parse_forward_open(service, request_data)
             connection = self.connection_manager.forward_open(session, forward_request)
@@ -556,9 +587,11 @@ class ENIPServer:
             closed = self.connection_manager.forward_close(session, connection_serial)
             if closed is not None:
                 self._deactivate_connection(closed)
-            return bytes([service | 0x80, 0x00, 0x00])
-        _LOGGER.debug("Unhandled CIP service 0x%02X for path %s", service, request_path.hex())
-        return bytes([service | 0x80, 0x00, 0x00])
+            return self._build_service_response(service)
+        _LOGGER.debug(
+            "Unconnected CIP service 0x%02X path=%s", service, request_path.hex()
+        )
+        return self._dispatch_explicit_service(service, request_path, request_data)
 
     def _parse_forward_open(self, service: int, payload: bytes) -> ForwardOpenRequest:
         minimum = 32 if service == _FORWARD_OPEN else 36
@@ -682,6 +715,92 @@ class ENIPServer:
                 index += 4
         return points
 
+    def _parse_object_path(self, path: bytes) -> Tuple[Optional[int], Optional[int], Optional[int]]:
+        class_code: Optional[int] = None
+        instance: Optional[int] = None
+        attribute: Optional[int] = None
+        index = 0
+        while index < len(path):
+            segment = path[index]
+            index += 1
+            if segment == 0x20 and index < len(path):
+                class_code = path[index]
+                index += 1
+                continue
+            if segment == 0x21 and index + 1 < len(path):
+                class_code = struct.unpack_from("<H", path, index)[0]
+                index += 2
+                continue
+            if segment == 0x24 and index < len(path):
+                instance = path[index]
+                index += 1
+                continue
+            if segment == 0x25 and index + 1 < len(path):
+                instance = struct.unpack_from("<H", path, index)[0]
+                index += 2
+                continue
+            if segment == 0x30 and index < len(path):
+                attribute = path[index]
+                index += 1
+                continue
+            if segment == 0x31 and index + 1 < len(path):
+                attribute = struct.unpack_from("<H", path, index)[0]
+                index += 2
+                continue
+            size_code = segment & 0xE0
+            if size_code == 0x20:
+                index += 1
+            elif size_code == 0x40:
+                index += 2
+            elif size_code == 0x60:
+                index += 4
+        return class_code, instance, attribute
+
+    def _build_service_response(
+        self, service: int, *, status: int = 0x00, payload: bytes = b""
+    ) -> bytes:
+        response = bytearray()
+        response.append(service | 0x80)
+        response.append(status & 0xFF)
+        response.append(0x00)  # additional status size (words)
+        response.append(0x00)  # reserved / padding for alignment
+        if payload:
+            response.extend(payload)
+        return bytes(response)
+
+    def _dispatch_explicit_service(
+        self, service: int, request_path: bytes, request_data: bytes
+    ) -> bytes:
+        class_code, instance, attribute = self._parse_object_path(request_path)
+        if class_code == 0x04 and instance is not None and attribute in {None, 0x03}:
+            if service == 0x0E:  # Get_Attribute_Single
+                if self._assembly_host is None:
+                    return self._build_service_response(service, status=0x05)
+                try:
+                    payload_bytes = self._assembly_host.build_unconnected_payload(instance)
+                except KeyError:
+                    return self._build_service_response(service, status=0x05)
+                _LOGGER.debug(
+                    "Responding to GET for assembly %s with %s",
+                    instance,
+                    payload_bytes.hex(),
+                )
+                return self._build_service_response(service, payload=payload_bytes)
+            if service == 0x10:  # Set_Attribute_Single
+                if self._assembly_host is None:
+                    return self._build_service_response(service, status=0x05)
+                try:
+                    self._assembly_host.ingest_unconnected_o_to_t(instance, request_data)
+                except KeyError:
+                    return self._build_service_response(service, status=0x05)
+                return self._build_service_response(service)
+        _LOGGER.debug(
+            "Unhandled CIP service 0x%02X for path %s",
+            service,
+            request_path.hex(),
+        )
+        return self._build_service_response(service, status=0x08)
+
     def _activate_connection(
         self, connection: CIPConnection, request: ForwardOpenRequest
     ) -> None:
@@ -716,10 +835,22 @@ class ENIPServer:
             sequence = struct.unpack_from("<H", payload, 0)[0]
             offset = 2
         user_payload = payload[offset:]
+        response_payload = b""
+        if len(user_payload) >= 2:
+            service = user_payload[0]
+            path_words = user_payload[1]
+            path_bytes = path_words * 2
+            header_length = 2 + path_bytes
+            if service in {0x0E, 0x10} and len(user_payload) >= header_length:
+                request_path = user_payload[2:header_length]
+                request_data = user_payload[header_length:]
+                response_payload = self._dispatch_explicit_service(
+                    service, request_path, request_data
+                )
+                return struct.pack("<H", sequence & 0xFFFF) + response_payload
         if self._assembly_host is not None and user_payload:
             with contextlib.suppress(Exception):
                 self._assembly_host.process_o_to_t(connection_id, user_payload)
-        response_payload = b""
         if self._assembly_host is not None:
             with contextlib.suppress(Exception):
                 response_payload = self._assembly_host.build_t_to_o_payload(connection_id)
