@@ -1,5 +1,6 @@
 """Runtime helpers for ENIP/CIP simulations."""
 
+from .assemblies import AssemblyHost
 from .cip_io import CIPIORuntime
 from .enip_server import (
     CIPConnection,
@@ -9,6 +10,7 @@ from .enip_server import (
 )
 
 __all__ = [
+    "AssemblyHost",
     "CIPConnection",
     "CIPIORuntime",
     "ConnectionManager",
