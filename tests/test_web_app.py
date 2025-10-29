@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import json
 import time
 from pathlib import Path
@@ -13,7 +14,7 @@ from pycipsim.config_store import ConfigurationStore, SimulatorConfiguration
 from pycipsim.device import ServiceResponse
 from pycipsim.handshake import HandshakePhase, HandshakeResult, HandshakeStep
 from pycipsim.session import CIPSession, SessionConfig
-from pycipsim.web.app import SimulatorManager, get_app
+from pycipsim.web.app import SimulatorManager, get_app, get_log_buffer_handler
 
 
 class _StubTransport:
@@ -53,6 +54,14 @@ def fake_interfaces(monkeypatch: pytest.MonkeyPatch) -> None:
         "pycipsim.web.app._detect_network_interfaces",
         lambda: [{"name": "eth0", "label": "eth0"}],
     )
+
+
+@pytest.fixture(autouse=True)
+def clear_log_buffer() -> None:
+    handler = get_log_buffer_handler()
+    handler.clear()
+    yield
+    handler.clear()
 
 
 @pytest.fixture()
@@ -170,6 +179,9 @@ def test_update_target_via_web(
     )
 
     assert response.status_code == 303
+    parsed = urlparse(response.headers["location"])
+    params = parse_qs(parsed.query)
+    assert params.get("selected") == ["WebConfig"]
     refreshed = store.get("WebConfig")
     assert refreshed.target_ip == "10.0.0.20"
     assert refreshed.network_interface == "eth0"
@@ -194,6 +206,21 @@ def test_start_simulated_mode_skips_runtime(
     assert active is not None
     assert active.runtime is None
 
+
+def test_index_renders_log_entries(
+    store: ConfigurationStore, manager: SimulatorManager
+) -> None:
+    handler = get_log_buffer_handler()
+    handler.clear()
+    logging.getLogger("pycipsim.tests.ui").error("UI log sentinel message")
+    app = get_app(store=store, manager=manager)
+    client = TestClient(app)
+
+    response = client.get("/")
+
+    assert response.status_code == 200
+    assert "Application Logs" in response.text
+    assert "UI log sentinel message" in response.text
 
 def test_live_handshake_failure_displays_steps(
     store: ConfigurationStore,
@@ -229,6 +256,7 @@ def test_live_handshake_failure_displays_steps(
     parsed = urlparse(location)
     params = parse_qs(parsed.query)
     assert params.get("error") == ["ENIP session failed: Service not supported"]
+    assert params.get("selected") == ["WebConfig"]
     assert manager.active() is None
 
     page = client.get(location)
@@ -256,6 +284,42 @@ def test_type_update_blocked_when_running(
     assert "error=" in response.headers["location"]
     config_after = store.get("WebConfig")
     assert config_after.find_signal(200, "SigA").signal_type == "BOOL"
+
+
+def test_delete_running_configuration_reports_error(
+    store: ConfigurationStore, manager: SimulatorManager
+) -> None:
+    payload = _scenario_payload()
+    payload["target"]["mode"] = "simulated"
+    config = SimulatorConfiguration.from_dict(payload)
+    store.upsert(config)
+    manager.start(config, store)
+    app = get_app(store=store, manager=manager)
+    client = TestClient(app)
+
+    response = client.post("/configs/WebConfig/delete", follow_redirects=False)
+    assert response.status_code == 303
+    location = response.headers["location"]
+    parsed = urlparse(location)
+    params = parse_qs(parsed.query)
+    assert params.get("error") == ["Configuration is locked while the simulator is running."]
+    assert params.get("selected") == ["WebConfig"]
+    assert store.get("WebConfig")
+
+
+def test_delete_missing_configuration_reports_error(
+    store: ConfigurationStore, manager: SimulatorManager
+) -> None:
+    app = get_app(store=store, manager=manager)
+    client = TestClient(app)
+
+    response = client.post("/configs/Unknown/delete", follow_redirects=False)
+    assert response.status_code == 303
+    location = response.headers["location"]
+    parsed = urlparse(location)
+    params = parse_qs(parsed.query)
+    assert params.get("error") == ["Configuration not found"]
+    assert list(store.list()) == []
 
 
 def test_invalid_signal_type_rejected(
@@ -399,6 +463,24 @@ def test_index_groups_assemblies_by_direction(
     assert "Assembly SecondOutput (#210)" in output_section
     input_section = html.split("Input Assemblies", 1)[1]
     assert "Assembly InputOne (#310)" in input_section
+
+
+def test_active_configuration_displayed_when_selected_missing(
+    store: ConfigurationStore, manager: SimulatorManager
+) -> None:
+    first = SimulatorConfiguration.from_dict(_scenario_payload("Alpha"))
+    second = SimulatorConfiguration.from_dict(_scenario_payload("Bravo"))
+    store.upsert(first)
+    store.upsert(second)
+    manager.start(second, store)
+
+    app = get_app(store=store, manager=manager)
+    client = TestClient(app)
+
+    response = client.get("/")
+    assert response.status_code == 200
+    html = response.text
+    assert "Configuration: Bravo" in html
 
 
 def test_add_and_remove_assembly_via_web(

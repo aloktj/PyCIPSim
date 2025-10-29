@@ -16,10 +16,92 @@
       form.inline { display: inline; }
       .signal-actions form { display: inline; margin-right: 0.5rem; }
       .signal-actions input[type="text"] { width: 8rem; }
-      .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 2rem; }
+      .main-layout {
+        display: grid;
+        grid-template-columns: minmax(20rem, 30%) 1fr;
+        gap: 2rem;
+        align-items: start;
+      }
+      .main-grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 2rem;
+      }
       .config-list ul { list-style: none; padding: 0; }
       .config-list li { margin-bottom: 0.5rem; }
       .config-list form { display: inline; }
+      .log-panel {
+        background: #0b0b0b;
+        color: #f5f5f5;
+        border: 1px solid #1f1f1f;
+        border-radius: 6px;
+        padding: 1rem;
+        display: flex;
+        flex-direction: column;
+        gap: 0.75rem;
+        max-height: 75vh;
+        position: sticky;
+        top: 1rem;
+      }
+      .log-panel h2 { margin: 0; font-size: 1.3rem; }
+      .log-panel-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 0.75rem;
+      }
+      .log-actions { display: flex; gap: 0.5rem; }
+      .log-actions button {
+        background: #1f4b99;
+        color: #fff;
+        border: none;
+        border-radius: 4px;
+        padding: 0.35rem 0.75rem;
+        cursor: pointer;
+      }
+      .log-actions button:hover { background: #205ec6; }
+      .log-output {
+        flex: 1;
+        overflow-y: auto;
+        background: #111;
+        border: 1px solid #2b2b2b;
+        border-radius: 4px;
+        padding: 0.75rem;
+        font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+        font-size: 0.85rem;
+        line-height: 1.4;
+        white-space: pre-wrap;
+        word-break: break-word;
+      }
+      .log-entry {
+        margin: 0;
+        padding: 0.25rem 0;
+        border-bottom: 1px solid #1f1f1f;
+      }
+      .log-entry:last-child { border-bottom: none; }
+      .log-entry.log-level-error,
+      .log-entry.log-level-critical { color: #ff8a80; }
+      .log-entry.log-level-warning { color: #ffca28; }
+      .log-entry.log-level-info { color: #81d4fa; }
+      .log-entry.log-level-debug { color: #c5e1a5; }
+      .log-empty { font-style: italic; color: #aaa; }
+      .log-hint { margin: 0; font-size: 0.8rem; color: #bdbdbd; }
+      .log-panel.log-fullscreen {
+        position: fixed;
+        top: 1rem;
+        left: 1rem;
+        right: 1rem;
+        bottom: 1rem;
+        max-height: none;
+        z-index: 1000;
+        padding: 1.5rem;
+        box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
+      }
+      .log-panel.log-fullscreen .log-output {
+        height: 100%;
+        resize: both;
+      }
+      .log-panel.log-fullscreen .log-hint { display: none; }
       .handshake-steps { margin-top: 1rem; }
       .handshake-steps ul { list-style: none; padding: 0; margin: 0.5rem 0 0; }
       .handshake-steps li { padding: 0.25rem 0; }
@@ -94,6 +176,12 @@
       details.add-assembly input[type="number"],
       details.add-assembly select { width: 10rem; }
       .padding-row { background: #f9f9f9; color: #555; font-style: italic; }
+      @media (max-width: 1100px) {
+        body { margin: 1rem; }
+        .main-layout { grid-template-columns: 1fr; }
+        .main-grid { grid-template-columns: 1fr; }
+        .log-panel { position: static; max-height: 50vh; }
+      }
     </style>
   </head>
   <body>
@@ -118,36 +206,70 @@
       <div class="status error">{{ error }}</div>
     {% endif %}
 
-    <section class="grid">
-      <div class="config-list">
-        <h2>Configurations</h2>
-        <form method="post" action="/configs/upload" enctype="multipart/form-data">
-          <label>Upload configuration (JSON):</label>
-          <input type="file" name="file" accept="application/json" required />
-          <button type="submit">Upload</button>
-        </form>
-
-        <ul>
-          {% for cfg in configs %}
-            <li>
-              <form method="post" action="/configs/{{ cfg.name }}/select" class="inline">
-                <button type="submit">Load</button>
-              </form>
-              <strong>{{ cfg.name }}</strong>
-              {% if active and active.configuration_name == cfg.name %}
-                <span>(Running)</span>
-              {% endif %}
-              <form method="post" action="/configs/{{ cfg.name }}/start" class="inline">
-                <button type="submit">Start</button>
-              </form>
-            </li>
+    <div class="main-layout">
+      <aside class="log-panel" id="log-panel">
+        <div class="log-panel-header">
+          <h2>Application Logs</h2>
+          <div class="log-actions">
+            <button type="button" id="log-expand">Full Screen</button>
+            <button type="button" id="log-collapse" hidden>Exit Full Screen</button>
+          </div>
+        </div>
+        <div class="log-output" id="log-output" role="region" aria-label="Application logs" tabindex="0">
+          {% if log_entries %}
+            {% for entry in log_entries %}
+              <pre class="log-entry log-level-{{ entry.level | lower }}">{{ entry.text }}</pre>
+            {% endfor %}
           {% else %}
-            <li>No configurations uploaded yet.</li>
-          {% endfor %}
-        </ul>
-      </div>
+            <div class="log-empty">No log messages yet.</div>
+          {% endif %}
+        </div>
+        <p class="log-hint">Latest messages appear at the bottom. Scroll to review earlier events.</p>
+      </aside>
 
-      <div class="config-detail">
+      <section class="main-grid">
+        <div class="config-list">
+          <h2>Configurations</h2>
+          <form method="post" action="/configs/upload" enctype="multipart/form-data">
+            <label>Upload configuration (JSON):</label>
+            <input type="file" name="file" accept="application/json" required />
+            <button type="submit">Upload</button>
+          </form>
+
+          <ul>
+            {% for cfg in configs %}
+              <li>
+                <form method="post" action="/configs/{{ cfg.name }}/select" class="inline">
+                  <button type="submit">Load</button>
+                </form>
+                <strong>{{ cfg.name }}</strong>
+                {% if active and active.configuration_name == cfg.name %}
+                  <span>(Running)</span>
+                {% endif %}
+                <form method="post" action="/configs/{{ cfg.name }}/start" class="inline">
+                  <button type="submit">Start</button>
+                </form>
+                <form
+                  method="post"
+                  action="/configs/{{ cfg.name }}/delete"
+                  class="inline"
+                  onsubmit="return confirm('Delete configuration {{ cfg.name | e }}?');"
+                >
+                  <button
+                    type="submit"
+                    {% if active and active.configuration_name == cfg.name %}disabled{% endif %}
+                  >
+                    Delete
+                  </button>
+                </form>
+              </li>
+            {% else %}
+              <li>No configurations uploaded yet.</li>
+            {% endfor %}
+          </ul>
+        </div>
+
+        <div class="config-detail">
         {% if current %}
           {% set is_running = active and active.configuration_name == current.name %}
           <h2>Configuration: {{ current.name }}</h2>
@@ -533,5 +655,54 @@
         {% endif %}
       </div>
     </section>
+  </div>
+
+    <script>
+      (function () {
+        const logPanel = document.getElementById("log-panel");
+        const logOutput = document.getElementById("log-output");
+        const expand = document.getElementById("log-expand");
+        const collapse = document.getElementById("log-collapse");
+
+        if (logOutput) {
+          logOutput.scrollTop = logOutput.scrollHeight;
+        }
+
+        function exitFullScreen() {
+          if (!logPanel) {
+            return;
+          }
+          logPanel.classList.remove("log-fullscreen");
+          if (expand) {
+            expand.hidden = false;
+          }
+          if (collapse) {
+            collapse.hidden = true;
+          }
+        }
+
+        if (expand && collapse && logPanel) {
+          expand.addEventListener("click", function () {
+            logPanel.classList.add("log-fullscreen");
+            expand.hidden = true;
+            collapse.hidden = false;
+            if (logOutput && typeof logOutput.focus === "function") {
+              try {
+                logOutput.focus({ preventScroll: true });
+              } catch (err) {
+                logOutput.focus();
+              }
+            }
+          });
+          collapse.addEventListener("click", exitFullScreen);
+        }
+
+        document.addEventListener("keydown", function (event) {
+          if (event.key === "Escape") {
+            exitFullScreen();
+          }
+        });
+      })();
+    </script>
   </body>
 </html>
