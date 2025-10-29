@@ -207,8 +207,10 @@ robustness testing requirements in SRS §3.3.
 ## Safety & Security Controls
 
 - **Connection Whitelists:** `SessionConfig.allowed_hosts` defaults to loopback-only communication. Provide additional hosts via
-  the CLI (`--allowed-host`) or environment variable `PYCIPSIM_ALLOWED_HOSTS`. Attempts to connect elsewhere raise a
-  `TransportError` unless `allow_external` is explicitly set or `PYCIPSIM_ALLOW_EXTERNAL=1` is exported (SRS §5.2).
+  the CLI (`--allowed-host`) or environment variable `PYCIPSIM_ALLOWED_HOSTS`. Entries may be hostnames, literal IP addresses, or
+  CIDR blocks (IPv4/IPv6); the session resolver normalizes these forms using forward and reverse DNS so equivalent addresses match
+  automatically. Attempts to connect elsewhere raise a `TransportError` unless `allow_external` is explicitly set or
+  `PYCIPSIM_ALLOW_EXTERNAL=1` is exported (SRS §5.2).
 - **Credential Management:** Instead of embedding usernames and passwords in scenario files, reference environment variables via
   `SessionConfig.username_env_var` / `password_env_var` or the CLI flags noted above so sensitive data never appears in plaintext
   configs (SRS §5.3).
