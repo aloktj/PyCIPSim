@@ -264,9 +264,9 @@ def get_app(
                 forward_open_overrides = meta
 
         return templates.TemplateResponse(
+            request,
             "index.html",
             {
-                "request": request,
                 "configs": configs,
                 "current": current,
                 "active": active,
