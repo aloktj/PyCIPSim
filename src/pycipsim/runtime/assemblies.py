@@ -200,6 +200,39 @@ class AssemblyHost:
                     exc,
                 )
 
+    def ingest_unconnected_o_to_t(self, assembly_id: int, payload: bytes) -> None:
+        """Decode an unconnected O→T payload and update cached values."""
+
+        assembly = self._assemblies.get(assembly_id)
+        if assembly is None:
+            raise KeyError(f"Unknown assembly {assembly_id}")
+        try:
+            decoded = parse_assembly_payload(assembly, payload)
+        except Exception as exc:  # pragma: no cover - defensive
+            _LOGGER.error(
+                "Failed to decode unconnected O→T payload for assembly %s: %s",
+                assembly_id,
+                exc,
+            )
+            return
+        if not decoded:
+            return
+        _LOGGER.debug("Decoded unconnected payload for assembly %s: %s", assembly_id, decoded)
+        with self._lock:
+            for signal in assembly.signals:
+                if signal.name in decoded:
+                    signal.value = decoded[signal.name]
+        callback = self._input_callback
+        if callback is not None:
+            try:
+                callback(assembly_id, dict(decoded))
+            except Exception as exc:  # pragma: no cover - defensive
+                _LOGGER.error(
+                    "Input callback for assembly %s failed: %s",
+                    assembly_id,
+                    exc,
+                )
+
     def build_t_to_o_payload(self, connection_id: int) -> bytes:
         """Return the last generated target-to-originator payload."""
 
@@ -211,6 +244,24 @@ class AssemblyHost:
         # Ensure payload is current when fetched outside the periodic loop.
         self._refresh_context(context)
         return context.last_payload
+
+    def build_unconnected_payload(self, assembly_id: int) -> bytes:
+        """Build a payload for explicit message responses."""
+
+        assembly = self._assemblies.get(assembly_id)
+        if assembly is None:
+            raise KeyError(f"Unknown assembly {assembly_id}")
+        with self._lock:
+            working = copy.deepcopy(assembly)
+        try:
+            return build_assembly_payload(working)
+        except Exception as exc:  # pragma: no cover - defensive
+            _LOGGER.error(
+                "Failed to build unconnected payload for assembly %s: %s",
+                assembly_id,
+                exc,
+            )
+            return b""
 
     def update_assembly_values(self, assembly_id: int, values: Dict[str, object]) -> None:
         """Manually update stored values for a given assembly."""

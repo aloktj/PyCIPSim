@@ -13,7 +13,7 @@ import click
 from rich.console import Console
 from rich.table import Table
 
-from .config_store import ConfigurationStore
+from .config_store import ConfigurationNotFoundError, ConfigurationStore
 from .configuration import SimulatorConfiguration, normalize_role, normalize_transport_mode
 from .device import DeviceProfile, ServiceRequest, ServiceResponse, make_default_profiles
 from .engine import (
@@ -26,9 +26,11 @@ from .engine import (
     run_scenarios_parallel,
 )
 from .logging_config import configure_logging
-from .runtime import CIPIORuntime
+from .runtime import AssemblyHost, CIPIORuntime, ConnectionManager
+from .runtime.enip_server import ENIPServer
 from .session import CIPSession, SessionConfig, TransportError
 from .target import CIPTargetRuntime
+from .runtime.enip_target import ENIPTargetRuntime
 
 console = Console()
 
@@ -205,11 +207,20 @@ def runtime(
     store = ConfigurationStore(storage_path=tmp_store_path)
     store.upsert(config)
     if config.role == "target":
-        runtime = CIPTargetRuntime(config, store, cycle_interval=cycle_interval)
-        runtime.start()
-        console.print(
-            f"[green]Target runtime listening on {config.target_ip}:{config.target_port}. Press CTRL+C to stop.[/green]"
-        )
+        transport_mode = (config.transport or "pycipsim").lower()
+        if transport_mode == "enip":
+            runtime = ENIPTargetRuntime(config, store, cycle_interval=cycle_interval)
+            runtime.start()
+            listen_port = runtime.tcp_port
+            console.print(
+                f"[green]ENIP target runtime listening on {config.target_ip}:{listen_port}. Press CTRL+C to stop.[/green]"
+            )
+        else:
+            runtime = CIPTargetRuntime(config, store, cycle_interval=cycle_interval)
+            runtime.start()
+            console.print(
+                f"[green]Target runtime listening on {config.target_ip}:{config.target_port}. Press CTRL+C to stop.[/green]"
+            )
         try:
             while True:
                 time.sleep(1.0)
@@ -564,6 +575,72 @@ def scaffold(output: str) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(json.dumps(steps, indent=2), encoding="utf-8")
     console.print(f"Scenario template written to {output_path}")
+
+
+def _load_structure(path: Path) -> Any:
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        try:  # pragma: no cover - optional dependency
+            import yaml  # type: ignore[import-untyped]
+        except ImportError as exc:
+            raise click.ClickException(
+                "Configuration file is not valid JSON and PyYAML is not installed."
+            ) from exc
+        try:
+            return yaml.safe_load(path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            raise click.ClickException(f"Failed to parse configuration file: {exc}") from exc
+
+
+def _load_assemblies_payload(structure: Any) -> List[Dict[str, Any]]:
+    if isinstance(structure, dict):
+        assemblies = structure.get("assemblies")
+    else:
+        assemblies = structure
+    if assemblies is None:
+        raise click.ClickException("Assembly definition file does not contain assemblies data.")
+    if not isinstance(assemblies, list):
+        raise click.ClickException("Assemblies payload must be a list of definitions.")
+    return assemblies
+
+
+def _build_store_producer_cli(
+    store: ConfigurationStore, config_name: str, assembly_id: int
+):
+    def producer(_: Any) -> Optional[Dict[str, object]]:
+        try:
+            configuration = store.get(config_name)
+        except ConfigurationNotFoundError:
+            return None
+        try:
+            assembly = configuration.find_assembly(assembly_id)
+        except Exception:
+            return None
+        values: Dict[str, object] = {}
+        for signal in assembly.signals:
+            if signal.is_padding or signal.value is None:
+                continue
+            values[signal.name] = signal.value
+        return values or None
+
+    return producer
+
+
+def _sync_host_outputs_cli(host: AssemblyHost, config: SimulatorConfiguration) -> None:
+    for assembly in config.assemblies:
+        direction = (assembly.direction or "").lower()
+        if direction not in {"input", "in"}:
+            continue
+        values: Dict[str, object] = {}
+        for signal in assembly.signals:
+            if signal.is_padding or signal.value is None:
+                continue
+            values[signal.name] = signal.value
+        if not values:
+            continue
+        with contextlib.suppress(KeyError):
+            host.update_assembly_values(assembly.assembly_id, values)
 
 
 def _render_benchmark(result: BenchmarkResult, target: float) -> None:

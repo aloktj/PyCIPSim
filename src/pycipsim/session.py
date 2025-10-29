@@ -391,6 +391,20 @@ class PyComm3Transport:
         with contextlib.suppress(Exception):
             self._driver.close()
 
+    def _unwrap_unconnected_response(self, data: bytes) -> bytes:
+        if len(data) < 2:
+            return data
+        length = struct.unpack_from("<H", data, 0)[0]
+        nested_end = 2 + length
+        if length <= 0 or nested_end > len(data):
+            return data
+        nested = data[2:nested_end]
+        if not nested:
+            return b""
+        if nested[0] & 0x80:
+            return nested[4:]
+        return data
+
     def _assembly_service(self, request: ServiceRequest, service_code: int) -> ServiceResponse:
         metadata = request.metadata or {}
         instance = metadata.get("instance") or request.tag_path
@@ -432,9 +446,9 @@ class PyComm3Transport:
             if request.service_code == "GET_ASSEMBLY":
                 value = tag.value
                 if isinstance(value, bytes):
-                    response_payload = value
+                    response_payload = self._unwrap_unconnected_response(value)
                 elif isinstance(value, bytearray):
-                    response_payload = bytes(value)
+                    response_payload = self._unwrap_unconnected_response(bytes(value))
                 elif value is None:
                     response_payload = b""
                 else:
