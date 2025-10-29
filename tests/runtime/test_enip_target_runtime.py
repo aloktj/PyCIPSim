@@ -14,7 +14,7 @@ from pycipsim.configuration import (
     parse_assembly_payload,
 )
 from pycipsim.device import ServiceRequest
-from pycipsim.runtime import CIPIORuntime
+from pycipsim.runtime.cip_io import CIPIORuntime
 from pycipsim.session import CIPSession, SessionConfig
 
 

@@ -13,7 +13,7 @@ from pycipsim.configuration import (
     parse_assembly_payload,
 )
 from pycipsim.device import ServiceResponse
-from pycipsim.runtime import CIPIORuntime
+from pycipsim.runtime.cip_io import CIPIORuntime
 from pycipsim.target import CIPTargetRuntime
 from pycipsim.target_protocol import MSG_DATA, TargetMessage
 
@@ -23,6 +23,7 @@ class DummySession:
         self.connected = False
         self.sent_requests = []
         self.next_responses: list[ServiceResponse] = []
+        self.listener = None
 
     def connect(self) -> None:
         self.connected = True
@@ -35,6 +36,9 @@ class DummySession:
         if not self.next_responses:
             raise AssertionError("No response queued for request")
         return self.next_responses.pop(0)
+
+    def register_update_listener(self, callback):
+        self.listener = callback
 
 
 class DummyStore:
@@ -131,6 +135,42 @@ def test_runtime_updates_store_with_received_inputs() -> None:
     assert request.tag_path == "assembly/200"
 
     assert store.calls == [("DemoConfig", 0xC8, {"InValue": "321"}, False)]
+
+
+def test_runtime_handles_async_input_updates() -> None:
+    input_signal = SignalDefinition(
+        name="InValue",
+        offset=0,
+        signal_type="UINT",
+    )
+    input_assembly = AssemblyDefinition(
+        assembly_id=0xD2,
+        name="Inputs",
+        direction="input",
+        size_bits=16,
+        signals=[input_signal],
+    )
+
+    config = _make_config(input_assembly)
+    session = DummySession()
+    store = DummyStore()
+    runtime = CIPIORuntime(config, store, session)
+    runtime._output_ids = []
+    runtime._input_ids = []
+
+    runtime.start()
+    try:
+        assert session.listener is not None
+
+        payload_assembly = copy.deepcopy(input_assembly)
+        payload_assembly.signals[0].value = "654"
+        payload = build_assembly_payload(payload_assembly)
+
+        session.listener(input_assembly.assembly_id, payload)
+
+        assert store.calls == [("DemoConfig", 0xD2, {"InValue": "654"}, False)]
+    finally:
+        runtime.stop()
 
 
 def test_target_runtime_multicast_broadcast(tmp_path) -> None:
