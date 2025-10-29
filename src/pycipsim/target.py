@@ -1,6 +1,7 @@
 """Runtime implementation for PyCIPSim target role."""
 from __future__ import annotations
 
+import contextlib
 import logging
 import socket
 import struct
@@ -29,6 +30,28 @@ from .target_protocol import (
 )
 
 _LOGGER = logging.getLogger(__name__)
+
+
+def _find_interface_ipv4(interface: str) -> Optional[str]:
+    """Attempt to resolve the IPv4 address associated with an interface."""
+
+    try:  # pragma: no cover - optional dependency
+        import psutil  # type: ignore[import-untyped]
+    except Exception:  # pragma: no cover - fallback when psutil is missing
+        psutil = None  # type: ignore[assignment]
+
+    if psutil is None:
+        return None
+
+    try:
+        addrs = psutil.net_if_addrs().get(interface, [])
+    except Exception:  # pragma: no cover - defensive
+        return None
+
+    for addr in addrs:
+        if addr.family == socket.AF_INET and addr.address:
+            return addr.address
+    return None
 
 
 @dataclass(slots=True)
@@ -65,6 +88,79 @@ class CIPTargetRuntime:
         self._sock: Optional[socket.socket] = None
         self._clients: Dict[Tuple[str, int], _TargetClient] = {}
         self._lock = threading.RLock()
+        self._multicast_target: Optional[Tuple[str, int]] = None
+        self._multicast_membership: Optional[bytes] = None
+
+    # ------------------------------------------------------------------
+    # Multicast helpers
+    # ------------------------------------------------------------------
+    def _resolve_multicast_interface(self) -> str:
+        """Determine the IPv4 address to use for multicast traffic."""
+
+        interface = (self._configuration.listener_interface or "").strip()
+        if interface:
+            resolved = _find_interface_ipv4(interface)
+            if resolved:
+                return resolved
+            _LOGGER.warning(
+                "Listener interface '%s' has no IPv4 address; defaulting to INADDR_ANY.",
+                interface,
+            )
+        host = (self._configuration.target_ip or "").strip()
+        if host and host not in {"0.0.0.0", ""}:
+            try:
+                socket.inet_aton(host)
+                return host
+            except OSError:
+                _LOGGER.debug("Target host '%s' is not a valid IPv4 address for multicast.", host)
+        return "0.0.0.0"
+
+    def _configure_multicast(self, sock: socket.socket) -> None:
+        """Join the configured multicast group when enabled."""
+
+        self._multicast_target = None
+        self._multicast_membership = None
+
+        if not self._configuration.multicast:
+            return
+        group = (self._configuration.receive_address or "").strip()
+        if not group:
+            return
+        try:
+            group_bytes = socket.inet_aton(group)
+        except OSError:
+            _LOGGER.warning("Invalid multicast receive address '%s'; skipping multicast setup.", group)
+            return
+
+        interface_ip = self._resolve_multicast_interface()
+        try:
+            interface_bytes = socket.inet_aton(interface_ip)
+        except OSError:
+            _LOGGER.debug(
+                "Interface IP '%s' is invalid; falling back to INADDR_ANY for multicast membership.",
+                interface_ip,
+            )
+            interface_bytes = socket.inet_aton("0.0.0.0")
+
+        membership = group_bytes + interface_bytes
+        try:
+            sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, membership)
+        except OSError as exc:
+            _LOGGER.warning(
+                "Unable to join multicast group %s on %s: %s", group, interface_ip, exc
+            )
+            return
+        try:
+            sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, struct.pack("B", 1))
+        except OSError:
+            _LOGGER.debug("Failed to set multicast TTL; continuing with default value.")
+        try:
+            sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_IF, interface_bytes)
+        except OSError:
+            _LOGGER.debug("Failed to set multicast interface; continuing with default routing.")
+
+        self._multicast_target = (group, int(self._configuration.target_port))
+        self._multicast_membership = membership
 
     # ------------------------------------------------------------------
     # Lifecycle management
@@ -85,6 +181,7 @@ class CIPTargetRuntime:
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         sock.bind((host, port))
         sock.settimeout(0.5)
+        self._configure_multicast(sock)
         self._sock = sock
         self._stop_event.clear()
         self._output_event.set()
@@ -111,10 +208,17 @@ class CIPTargetRuntime:
         self._threads.clear()
         if self._sock is not None:
             try:
+                if self._multicast_membership:
+                    with contextlib.suppress(OSError):
+                        self._sock.setsockopt(
+                            socket.IPPROTO_IP, socket.IP_DROP_MEMBERSHIP, self._multicast_membership
+                        )
                 self._sock.close()
             except OSError:
                 pass
             self._sock = None
+        self._multicast_target = None
+        self._multicast_membership = None
         with self._lock:
             self._clients.clear()
         _LOGGER.info("Target runtime for '%s' stopped.", self._config_name)
@@ -273,7 +377,7 @@ class CIPTargetRuntime:
             if self._stop_event.is_set():
                 break
             clients = self._clients_snapshot()
-            if not clients:
+            if not clients and not self._multicast_target:
                 continue
             for assembly in self._input_assemblies():
                 try:
@@ -291,8 +395,11 @@ class CIPTargetRuntime:
                     assembly_id=assembly.assembly_id,
                     payload=payload,
                 )
-                for client in clients:
-                    self._send_datagram(datagram, client.data_address())
+                targets: List[Tuple[str, int]] = [client.data_address() for client in clients]
+                if self._multicast_target:
+                    targets.append(self._multicast_target)
+                for destination in targets:
+                    self._send_datagram(datagram, destination)
 
 
 __all__ = ["CIPTargetRuntime"]
