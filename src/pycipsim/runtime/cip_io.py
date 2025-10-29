@@ -7,15 +7,15 @@ import threading
 import time
 from typing import Dict, Iterable, List
 
-from .config_store import ConfigurationError, ConfigurationStore
-from .configuration import (
+from ..config_store import ConfigurationError, ConfigurationStore
+from ..configuration import (
     AssemblyDefinition,
     SimulatorConfiguration,
     build_assembly_payload,
     parse_assembly_payload,
 )
-from .device import ServiceRequest
-from .session import CIPSession
+from ..device import ServiceRequest
+from ..session import CIPSession
 
 _LOGGER = logging.getLogger(__name__)
 
