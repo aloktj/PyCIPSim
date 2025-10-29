@@ -10,7 +10,7 @@ import time
 from dataclasses import dataclass
 from typing import Dict, Iterable, List, Optional, Tuple
 
-from .config_store import ConfigurationStore
+from .config_store import ConfigurationStore, ConfigurationNotFoundError
 from .configuration import (
     AssemblyDefinition,
     ConfigurationError,
@@ -166,20 +166,14 @@ class CIPTargetRuntime:
     # Lifecycle management
     # ------------------------------------------------------------------
     def start(self) -> None:
-        host = self._configuration.target_ip or "0.0.0.0"
+        requested_host = (self._configuration.target_ip or "0.0.0.0").strip() or "0.0.0.0"
         try:
             port = int(self._configuration.target_port)
         except Exception as exc:  # pragma: no cover - defensive
             raise RuntimeError("Configuration target port is invalid for target runtime") from exc
-        _LOGGER.info(
-            "Starting PyCIPSim target runtime '%s' on %s:%s",
-            self._config_name,
-            host,
-            port,
-        )
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        sock.bind((host, port))
+        bound_host = self._bind_socket(sock, requested_host, port)
         sock.settimeout(0.5)
         self._configure_multicast(sock)
         self._sock = sock
@@ -199,6 +193,12 @@ class CIPTargetRuntime:
         )
         broadcast_thread.start()
         self._threads.append(broadcast_thread)
+        _LOGGER.info(
+            "PyCIPSim target runtime '%s' listening on %s:%s",
+            self._config_name,
+            bound_host,
+            port,
+        )
 
     def stop(self) -> None:
         self._stop_event.set()
@@ -229,14 +229,79 @@ class CIPTargetRuntime:
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
+    def _candidate_bind_addresses(self, requested_host: str) -> List[str]:
+        """Return preferred bind addresses for the target socket."""
+
+        candidates: List[str] = []
+        seen_interfaces: set[str] = set()
+        for interface in (self._configuration.network_interface, self._configuration.listener_interface):
+            name = (interface or "").strip()
+            if not name or name in seen_interfaces:
+                continue
+            seen_interfaces.add(name)
+            resolved = _find_interface_ipv4(name)
+            if resolved:
+                if resolved not in candidates:
+                    candidates.append(resolved)
+            else:
+                _LOGGER.warning(
+                    "Network interface '%s' has no IPv4 address; ignoring for target runtime bind.",
+                    name,
+                )
+
+        host = requested_host.strip()
+        if host and host not in candidates:
+            candidates.append(host)
+        if "0.0.0.0" not in candidates:
+            candidates.append("0.0.0.0")
+        return candidates
+
+    def _bind_socket(self, sock: socket.socket, requested_host: str, port: int) -> str:
+        """Bind a UDP socket, gracefully falling back when the address is unavailable."""
+
+        last_error: Optional[OSError] = None
+        for candidate in self._candidate_bind_addresses(requested_host):
+            try:
+                sock.bind((candidate, port))
+            except OSError as exc:
+                last_error = exc
+                if candidate != "0.0.0.0" or requested_host not in {"", "0.0.0.0"}:
+                    _LOGGER.warning(
+                        "Unable to bind target runtime '%s' to %s:%s: %s",
+                        self._config_name,
+                        candidate,
+                        port,
+                        exc,
+                    )
+                continue
+            return sock.getsockname()[0]
+
+        sock.close()
+        if last_error is not None:
+            raise last_error
+        raise OSError("Unable to bind target runtime socket; no addresses available")
+
+    def _configuration_snapshot(self) -> SimulatorConfiguration:
+        """Return the latest configuration instance from the backing store."""
+
+        try:
+            configuration = self._store.get(self._config_name)
+        except ConfigurationNotFoundError:
+            return self._configuration
+        else:
+            self._configuration = configuration
+            return configuration
+
     def _input_assemblies(self) -> Iterable[AssemblyDefinition]:
-        for assembly in self._configuration.assemblies:
+        configuration = self._configuration_snapshot()
+        for assembly in configuration.assemblies:
             direction = (assembly.direction or "").lower()
             if direction in {"input", "in"}:
                 yield assembly
 
     def _output_assemblies(self) -> Iterable[AssemblyDefinition]:
-        for assembly in self._configuration.assemblies:
+        configuration = self._configuration_snapshot()
+        for assembly in configuration.assemblies:
             direction = (assembly.direction or "").lower()
             if direction in {"output", "out"}:
                 yield assembly
@@ -284,7 +349,7 @@ class CIPTargetRuntime:
 
     def _handle_get(self, assembly_id: int, addr: Tuple[str, int]) -> None:
         try:
-            assembly = self._configuration.find_assembly(assembly_id)
+            assembly = self._configuration_snapshot().find_assembly(assembly_id)
             payload = build_assembly_payload(assembly)
         except ConfigurationError as exc:
             _LOGGER.warning("GET for unknown assembly %s on '%s': %s", assembly_id, self._config_name, exc)
@@ -300,7 +365,7 @@ class CIPTargetRuntime:
 
     def _handle_set(self, assembly_id: int, data: bytes, addr: Tuple[str, int]) -> None:
         try:
-            assembly = self._configuration.find_assembly(assembly_id)
+            assembly = self._configuration_snapshot().find_assembly(assembly_id)
         except ConfigurationError as exc:
             _LOGGER.warning("SET for unknown assembly %s on '%s': %s", assembly_id, self._config_name, exc)
             error = TargetMessage.encode(
