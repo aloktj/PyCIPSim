@@ -6,6 +6,73 @@ from pycipsim.handshake import HandshakePhase, perform_handshake
 from pycipsim.session import SessionConfig
 
 
+def test_pycipsim_handshake_simulates_udp_when_requested() -> None:
+    config = SessionConfig(transport="pycipsim")
+
+    result = perform_handshake(config, simulate=True)
+
+    assert result.success
+    assert [step.phase for step in result.steps] == [HandshakePhase.TCP_CONNECT]
+    assert result.steps[0].detail == "Simulated UDP HELLO"
+
+
+def test_pycipsim_handshake_uses_udp_transport(monkeypatch) -> None:
+    config = SessionConfig(transport="pycipsim")
+    events: List[str] = []
+
+    class DummyTransport:
+        def __init__(self, session_config: SessionConfig) -> None:
+            assert session_config is config
+
+        def connect(self) -> None:
+            events.append("connect")
+
+        def disconnect(self) -> None:
+            events.append("disconnect")
+
+    monkeypatch.setattr(
+        "pycipsim.handshake.PyCipSimClientTransport",
+        lambda session_config: DummyTransport(session_config),
+    )
+
+    result = perform_handshake(config)
+
+    assert result.success
+    assert [step.phase for step in result.steps] == [HandshakePhase.TCP_CONNECT]
+    assert result.steps[0].detail == "UDP HELLO acknowledged by target"
+    assert events == ["connect", "disconnect"]
+
+
+def test_pycipsim_handshake_failure_reports_detail(monkeypatch) -> None:
+    config = SessionConfig(transport="pycipsim")
+    events: List[str] = []
+
+    class DummyTransport:
+        def __init__(self, session_config: SessionConfig) -> None:
+            assert session_config is config
+
+        def connect(self) -> None:
+            events.append("connect")
+            raise RuntimeError("no listener")
+
+        def disconnect(self) -> None:
+            events.append("disconnect")
+
+    monkeypatch.setattr(
+        "pycipsim.handshake.PyCipSimClientTransport",
+        lambda session_config: DummyTransport(session_config),
+    )
+
+    result = perform_handshake(config)
+
+    assert not result.success
+    assert result.error == "UDP HELLO failed: no listener"
+    assert [step.phase for step in result.steps] == [HandshakePhase.TCP_CONNECT]
+    assert not result.steps[0].success
+    assert result.steps[0].detail == "UDP HELLO failed: no listener"
+    assert events == ["connect", "disconnect"]
+
+
 def test_simulated_handshake_produces_all_phases() -> None:
     config = SessionConfig()
     result = perform_handshake(config, simulate=True)
