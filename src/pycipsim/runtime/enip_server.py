@@ -12,6 +12,8 @@ import time
 from dataclasses import dataclass, field
 from typing import Dict, Iterable, List, Optional, Tuple
 
+from .assemblies import AssemblyHost
+
 _LOGGER = logging.getLogger(__name__)
 
 _ENCAP_HEADER = struct.Struct("<HHII8sI")
@@ -25,6 +27,7 @@ _SEND_UNIT_DATA = 0x0070
 _ADDRESS_ITEM_NULL = 0x0000
 _ADDRESS_ITEM_CONNECTED = 0x00A1
 _DATA_ITEM_UNCONNECTED = 0x00B2
+_DATA_ITEM_CONNECTED = 0x00B1
 
 _FORWARD_OPEN = 0x54
 _LARGE_FORWARD_OPEN = 0x5B
@@ -74,6 +77,7 @@ class ForwardOpenRequest:
 
     priority_ticks: int
     timeout_ticks: int
+    connection_points: Tuple[int, ...]
 
 
 @dataclass(slots=True)
@@ -90,6 +94,7 @@ class CIPConnection:
     timeout_seconds: float
     o_to_t_rpi: int
     t_to_o_rpi: int
+    connection_points: Tuple[int, ...] = field(default_factory=tuple)
     created_at: float = field(default_factory=time.monotonic)
     last_activity: float = field(default_factory=time.monotonic)
 
@@ -153,13 +158,14 @@ class ConnectionManager:
             timeout_seconds=timeout,
             o_to_t_rpi=request.o_to_t_rpi,
             t_to_o_rpi=request.t_to_o_rpi,
+            connection_points=request.connection_points,
         )
         key = (session.handle, request.connection_serial, request.vendor_id, request.originator_serial)
         with self._lock:
             self._register(key, connection)
         return connection
 
-    def forward_close(self, session: ENIPSession, connection_serial: int) -> None:
+    def forward_close(self, session: ENIPSession, connection_serial: int) -> Optional[CIPConnection]:
         key_to_remove: Optional[Tuple[int, int, int, int]] = None
         with self._lock:
             for key, connection in list(self._connections.items()):
@@ -169,10 +175,11 @@ class ConnectionManager:
                     key_to_remove = key
                     break
             if key_to_remove is None:
-                return
+                return None
             connection = self._connections.pop(key_to_remove)
             for identifier in connection.identifiers():
                 self._by_id.pop(identifier, None)
+            return connection
 
     def refresh(self, connection_id: int) -> None:
         key = self._by_id.get(connection_id)
@@ -183,7 +190,8 @@ class ConnectionManager:
             return
         connection.refresh()
 
-    def drop_session(self, session_handle: int) -> None:
+    def drop_session(self, session_handle: int) -> List[CIPConnection]:
+        removed: List[CIPConnection] = []
         with self._lock:
             for key, connection in list(self._connections.items()):
                 if connection.session_handle != session_handle:
@@ -191,6 +199,8 @@ class ConnectionManager:
                 self._connections.pop(key, None)
                 for identifier in connection.identifiers():
                     self._by_id.pop(identifier, None)
+                removed.append(connection)
+        return removed
 
     def cleanup(self) -> List[CIPConnection]:
         now = time.monotonic()
@@ -208,10 +218,12 @@ class ConnectionManager:
         with self._lock:
             return list({id(conn): conn for conn in self._connections.values()}.values())
 
-    def clear(self) -> None:
+    def clear(self) -> List[CIPConnection]:
         with self._lock:
+            removed = list(self._connections.values())
             self._connections.clear()
             self._by_id.clear()
+        return removed
 
 
 class ENIPServer:
@@ -226,6 +238,7 @@ class ENIPServer:
         identity: Optional[Dict[str, int]] = None,
         connection_manager: Optional[ConnectionManager] = None,
         reaper_interval: float = 0.5,
+        assembly_host: Optional[AssemblyHost] = None,
     ) -> None:
         self._host = host
         self._tcp_port = tcp_port
@@ -233,6 +246,7 @@ class ENIPServer:
         self._identity = {**_DEFAULT_IDENTITY, **(identity or {})}
         self.connection_manager = connection_manager or ConnectionManager()
         self._reaper_interval = max(reaper_interval, 0.1)
+        self._assembly_host = assembly_host
         self._sessions: Dict[int, ENIPSession] = {}
         self._session_lock = threading.Lock()
         self._next_session_handle = 1
@@ -293,7 +307,9 @@ class ENIPServer:
         for thread in list(self._threads):
             thread.join(timeout=1.0)
         self._threads.clear()
-        self.connection_manager.clear()
+        removed = self.connection_manager.clear()
+        for connection in removed:
+            self._deactivate_connection(connection)
         with self._session_lock:
             self._sessions.clear()
 
@@ -354,6 +370,7 @@ class ENIPServer:
                     connection.session_handle,
                     connection.timeout_seconds,
                 )
+                self._deactivate_connection(connection)
             time.sleep(self._reaper_interval)
 
     def _handle_client(self, conn: socket.socket, addr: Tuple[str, int]) -> None:
@@ -459,7 +476,9 @@ class ENIPServer:
             session = self._sessions.pop(session_handle, None)
         if session is None:
             return
-        self.connection_manager.drop_session(session_handle)
+        removed = self.connection_manager.drop_session(session_handle)
+        for connection in removed:
+            self._deactivate_connection(connection)
         _LOGGER.info("Session %s unregistered", session_handle)
 
     def _handle_data_message(self, command: int, session_handle: int, payload: bytes) -> bytes:
@@ -481,17 +500,32 @@ class ENIPServer:
             items.append((type_id, payload[offset : offset + length]))
             offset += length
         cip_response = b""
+        address_item: Optional[bytes] = None
+        connected_payload: Optional[bytes] = None
         for type_id, data in items:
             if type_id == _DATA_ITEM_UNCONNECTED:
                 cip_response = self._handle_unconnected_data(session, data)
             elif type_id == _ADDRESS_ITEM_CONNECTED and command == _SEND_UNIT_DATA:
+                address_item = data
                 if len(data) >= 4:
                     connection_id = struct.unpack_from("<I", data, 0)[0]
                     self.connection_manager.refresh(connection_id)
+            elif type_id == _DATA_ITEM_CONNECTED and command == _SEND_UNIT_DATA:
+                connected_payload = data
         response_items: List[Tuple[int, bytes]] = []
         for type_id, data in items:
             if type_id == _DATA_ITEM_UNCONNECTED:
                 response_items.append((type_id, cip_response))
+            elif (
+                command == _SEND_UNIT_DATA
+                and type_id == _DATA_ITEM_CONNECTED
+                and address_item is not None
+                and connected_payload is not None
+            ):
+                connection_id = struct.unpack_from("<I", address_item, 0)[0]
+                response_items.append(
+                    (type_id, self._handle_connected_exchange(connection_id, connected_payload))
+                )
             else:
                 response_items.append((type_id, data))
         response = bytearray(struct.pack("<IHH", interface_handle, timeout, len(response_items)))
@@ -513,12 +547,15 @@ class ENIPServer:
         if service in (_FORWARD_OPEN, _LARGE_FORWARD_OPEN):
             forward_request = self._parse_forward_open(service, request_data)
             connection = self.connection_manager.forward_open(session, forward_request)
+            self._activate_connection(connection, forward_request)
             return self._build_forward_open_response(service, forward_request, connection)
         if service == _FORWARD_CLOSE:
             if len(request_data) < 10:
                 raise ValueError("Forward close payload truncated")
             connection_serial = struct.unpack_from("<H", request_data, 0)[0]
-            self.connection_manager.forward_close(session, connection_serial)
+            closed = self.connection_manager.forward_close(session, connection_serial)
+            if closed is not None:
+                self._deactivate_connection(closed)
             return bytes([service | 0x80, 0x00, 0x00])
         _LOGGER.debug("Unhandled CIP service 0x%02X for path %s", service, request_path.hex())
         return bytes([service | 0x80, 0x00, 0x00])
@@ -568,6 +605,7 @@ class ENIPServer:
         if len(payload) < offset + expected_bytes:
             raise ValueError("ForwardOpen connection path truncated")
         connection_path = payload[offset : offset + expected_bytes]
+        connection_points = self._parse_connection_points(connection_path)
         return ForwardOpenRequest(
             service=service,
             o_to_t_connection_id=o_to_t_connection_id,
@@ -585,7 +623,107 @@ class ENIPServer:
             t_to_o_network=t_to_o_network,
             priority_ticks=priority_ticks,
             timeout_ticks=timeout_ticks,
+            connection_points=tuple(connection_points),
         )
+
+    def _parse_connection_points(self, path: bytes) -> List[int]:
+        points: List[int] = []
+        index = 0
+        while index < len(path):
+            segment = path[index]
+            index += 1
+            if segment in {0x2C, 0x2D, 0x2E}:
+                # Direct connection point segments.
+                if segment == 0x2C and index < len(path):
+                    points.append(path[index])
+                    index += 1
+                    continue
+                if segment == 0x2D and index + 1 < len(path):
+                    points.append(struct.unpack_from("<H", path, index)[0])
+                    index += 2
+                    continue
+                if segment == 0x2E and index + 3 < len(path):
+                    points.append(struct.unpack_from("<I", path, index)[0])
+                    index += 4
+                    continue
+                break
+            if segment in {0x00, 0x01} and index < len(path):
+                # Logical segment with format byte.
+                segment_type = path[index]
+                index += 1
+                if segment_type == 0x2C and index < len(path):
+                    points.append(path[index])
+                    index += 1
+                    continue
+                if segment_type == 0x2D and index + 1 < len(path):
+                    points.append(struct.unpack_from("<H", path, index)[0])
+                    index += 2
+                    continue
+                if segment_type == 0x2E and index + 3 < len(path):
+                    points.append(struct.unpack_from("<I", path, index)[0])
+                    index += 4
+                    continue
+                # Skip logical class/instance segments.
+                size_code = segment_type & 0x18
+                if size_code == 0x00:
+                    index += 1
+                elif size_code == 0x10:
+                    index += 2
+                elif size_code == 0x18:
+                    index += 4
+                continue
+            # Skip simple logical segments without prefix.
+            size_code = segment & 0xE0
+            if size_code == 0x20:
+                index += 1
+            elif size_code == 0x40:
+                index += 2
+            elif size_code == 0x60:
+                index += 4
+        return points
+
+    def _activate_connection(
+        self, connection: CIPConnection, request: ForwardOpenRequest
+    ) -> None:
+        if self._assembly_host is None:
+            return
+        key = connection.t_to_o_connection_id or connection.o_to_t_connection_id
+        if not key:
+            key = id(connection)
+        try:
+            self._assembly_host.activate_connection(
+                key,
+                connection.identifiers(),
+                request.connection_points,
+                t_to_o_rpi_us=request.t_to_o_rpi,
+            )
+        except Exception as exc:  # pragma: no cover - defensive
+            _LOGGER.error("Failed to activate assembly host connection: %s", exc)
+
+    def _deactivate_connection(self, connection: CIPConnection) -> None:
+        if self._assembly_host is None:
+            return
+        key = connection.t_to_o_connection_id or connection.o_to_t_connection_id
+        if not key:
+            key = id(connection)
+        with contextlib.suppress(Exception):
+            self._assembly_host.deactivate_connection(key)
+
+    def _handle_connected_exchange(self, connection_id: int, payload: bytes) -> bytes:
+        sequence = 0
+        offset = 0
+        if len(payload) >= 2:
+            sequence = struct.unpack_from("<H", payload, 0)[0]
+            offset = 2
+        user_payload = payload[offset:]
+        if self._assembly_host is not None and user_payload:
+            with contextlib.suppress(Exception):
+                self._assembly_host.process_o_to_t(connection_id, user_payload)
+        response_payload = b""
+        if self._assembly_host is not None:
+            with contextlib.suppress(Exception):
+                response_payload = self._assembly_host.build_t_to_o_payload(connection_id)
+        return struct.pack("<H", sequence & 0xFFFF) + response_payload
 
     def _build_forward_open_response(
         self,
