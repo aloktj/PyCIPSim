@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import json
 import time
 from pathlib import Path
@@ -13,7 +14,7 @@ from pycipsim.config_store import ConfigurationStore, SimulatorConfiguration
 from pycipsim.device import ServiceResponse
 from pycipsim.handshake import HandshakePhase, HandshakeResult, HandshakeStep
 from pycipsim.session import CIPSession, SessionConfig
-from pycipsim.web.app import SimulatorManager, get_app
+from pycipsim.web.app import SimulatorManager, get_app, get_log_buffer_handler
 
 
 class _StubTransport:
@@ -53,6 +54,14 @@ def fake_interfaces(monkeypatch: pytest.MonkeyPatch) -> None:
         "pycipsim.web.app._detect_network_interfaces",
         lambda: [{"name": "eth0", "label": "eth0"}],
     )
+
+
+@pytest.fixture(autouse=True)
+def clear_log_buffer() -> None:
+    handler = get_log_buffer_handler()
+    handler.clear()
+    yield
+    handler.clear()
 
 
 @pytest.fixture()
@@ -197,6 +206,21 @@ def test_start_simulated_mode_skips_runtime(
     assert active is not None
     assert active.runtime is None
 
+
+def test_index_renders_log_entries(
+    store: ConfigurationStore, manager: SimulatorManager
+) -> None:
+    handler = get_log_buffer_handler()
+    handler.clear()
+    logging.getLogger("pycipsim.tests.ui").error("UI log sentinel message")
+    app = get_app(store=store, manager=manager)
+    client = TestClient(app)
+
+    response = client.get("/")
+
+    assert response.status_code == 200
+    assert "Application Logs" in response.text
+    assert "UI log sentinel message" in response.text
 
 def test_live_handshake_failure_displays_steps(
     store: ConfigurationStore,
