@@ -140,6 +140,19 @@
               <form method="post" action="/configs/{{ cfg.name }}/start" class="inline">
                 <button type="submit">Start</button>
               </form>
+              <form
+                method="post"
+                action="/configs/{{ cfg.name }}/delete"
+                class="inline"
+                onsubmit="return confirm('Delete configuration {{ cfg.name | e }}?');"
+              >
+                <button
+                  type="submit"
+                  {% if active and active.configuration_name == cfg.name %}disabled{% endif %}
+                >
+                  Delete
+                </button>
+              </form>
             </li>
           {% else %}
             <li>No configurations uploaded yet.</li>

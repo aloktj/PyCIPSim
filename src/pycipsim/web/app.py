@@ -340,6 +340,19 @@ def get_app(
             message=f"Simulator started for {name}. Handshake duration {handshake.duration_ms:.2f}ms.",
         )
 
+    @app.post("/configs/{name}/delete")
+    async def delete_configuration(name: str) -> RedirectResponse:
+        try:
+            store.get(name)
+        except ConfigurationNotFoundError:
+            return redirect("/", error="Configuration not found")
+        try:
+            manager.ensure_config_mutable(name)
+        except RuntimeError as exc:
+            return redirect("/", error=str(exc))
+        store.delete(name)
+        return redirect("/", message=f"Configuration '{name}' deleted.")
+
     @app.post("/stop")
     async def stop_simulator() -> RedirectResponse:
         manager.stop()
