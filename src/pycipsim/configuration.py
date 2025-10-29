@@ -41,6 +41,12 @@ _SIGNAL_TYPE_LOOKUP = {item.lower(): item for item in CIP_SIGNAL_TYPES}
 # legacy behaviour (no live transport), while "live" enables network sessions.
 RUNTIME_MODES: tuple[str, ...] = ("simulated", "live")
 
+# Supported simulator operating roles.
+SIMULATOR_ROLES: tuple[str, ...] = ("originator", "target")
+
+# Transport implementations available for live originator sessions.
+TRANSPORT_MODES: tuple[str, ...] = ("pycomm3", "pycipsim")
+
 
 # Nominal bit widths for well-known CIP signal types.
 _CIP_SIGNAL_TYPE_BITS: Dict[str, int] = {
@@ -126,6 +132,29 @@ def normalize_runtime_mode(value: Optional[str]) -> str:
         return "simulated"
     if text not in RUNTIME_MODES:
         raise ConfigurationError(f"Unsupported runtime mode '{value}'.")
+    return text
+
+
+def normalize_role(value: Optional[str]) -> str:
+    """Validate and canonicalize the configured simulator role."""
+
+    text = "originator" if value is None else str(value).strip().lower()
+    if not text:
+        return "originator"
+    if text not in SIMULATOR_ROLES:
+        raise ConfigurationError(f"Unsupported simulator role '{value}'.")
+    return text
+
+
+def normalize_transport_mode(value: Optional[str], *, default: Optional[str] = None) -> str:
+    """Validate and canonicalize the configured transport implementation."""
+
+    fallback = default or "pycomm3"
+    text = fallback if value is None else str(value).strip().lower()
+    if not text:
+        return fallback
+    if text not in TRANSPORT_MODES:
+        raise ConfigurationError(f"Unsupported transport mode '{value}'.")
     return text
 
 
@@ -396,6 +425,8 @@ class SimulatorConfiguration:
     multicast: bool = False
     network_interface: Optional[str] = None
     runtime_mode: str = "simulated"
+    role: str = "originator"
+    transport: str = "pycomm3"
     metadata: Dict[str, Any] = field(default_factory=dict)
     allowed_hosts: Tuple[str, ...] = field(default_factory=tuple)
     allow_external: bool = False
@@ -680,6 +711,19 @@ class SimulatorConfiguration:
         )
         if runtime_mode == "simulated" and "runtime_mode" in raw:
             runtime_mode = normalize_runtime_mode(raw.get("runtime_mode"))
+        role_raw: Optional[str] = None
+        transport_raw: Optional[str] = None
+        if isinstance(target, dict):
+            role_raw = target.get("role")
+            transport_raw = target.get("transport")
+        if role_raw is None:
+            role_raw = raw.get("role")
+        role = normalize_role(role_raw)
+        if transport_raw is None:
+            transport_raw = raw.get("transport")
+        transport = normalize_transport_mode(
+            transport_raw, default="pycipsim" if role == "target" else "pycomm3"
+        )
         allowed_hosts_raw: Any = None
         allow_external = False
         if isinstance(target, dict):
@@ -697,6 +741,8 @@ class SimulatorConfiguration:
             multicast=multicast,
             network_interface=str(network_interface) if network_interface else None,
             runtime_mode=runtime_mode,
+            role=role,
+            transport=transport,
             metadata=metadata,
             assemblies=assemblies,
             allowed_hosts=parse_allowed_hosts(allowed_hosts_raw),
@@ -706,6 +752,8 @@ class SimulatorConfiguration:
     def to_dict(self) -> Dict[str, Any]:
         return {
             "name": self.name,
+            "role": self.role,
+            "transport": self.transport,
             "target": {
                 "ip": self.target_ip,
                 "port": self.target_port,
@@ -713,6 +761,8 @@ class SimulatorConfiguration:
                 "multicast": self.multicast,
                 "interface": self.network_interface,
                 "mode": self.runtime_mode,
+                "role": self.role,
+                "transport": self.transport,
                 "allowed_hosts": list(self.allowed_hosts),
                 "allow_external": self.allow_external,
             },

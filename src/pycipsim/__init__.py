@@ -18,6 +18,7 @@ from .engine import (
 )
 from .config_store import ConfigurationStore, SimulatorConfiguration
 from .handshake import HandshakePhase, HandshakeResult, HandshakeStep, perform_handshake
+from .target import CIPTargetRuntime
 
 __all__ = [
     "CIPSession",
@@ -40,4 +41,5 @@ __all__ = [
     "HandshakeResult",
     "HandshakeStep",
     "perform_handshake",
+    "CIPTargetRuntime",
 ]

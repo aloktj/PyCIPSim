@@ -13,6 +13,8 @@ from .configuration import (
     SimulatorConfiguration,
     SignalDefinition,
     normalize_runtime_mode,
+    normalize_role,
+    normalize_transport_mode,
     parse_allowed_hosts,
     validate_signal_type,
 )
@@ -107,6 +109,31 @@ class ConfigurationStore:
             if persist:
                 self._persist()
 
+    def update_assembly_values(
+        self,
+        name: str,
+        assembly_id: int,
+        values: Dict[str, Any],
+        *,
+        persist: bool = False,
+    ) -> None:
+        """Update assembly values regardless of direction.
+
+        Used by the target runtime when processing inbound O->T payloads.
+        """
+
+        with self._lock:
+            configuration = self.get(name)
+            assembly = configuration.find_assembly(assembly_id)
+            for signal in assembly.signals:
+                if signal.is_padding:
+                    continue
+                if signal.name not in values:
+                    continue
+                signal.value = values[signal.name]
+            if persist:
+                self._persist()
+
     def update_signal_type(
         self, name: str, assembly_id: int, signal_name: str, new_type: str
     ) -> SignalDefinition:
@@ -141,6 +168,8 @@ class ConfigurationStore:
         multicast: bool,
         network_interface: Optional[str],
         runtime_mode: Optional[str],
+        role: Optional[str] = None,
+        transport: Optional[str] = None,
         allowed_hosts: Optional[str] = None,
         allow_external: Optional[bool] = None,
     ) -> SimulatorConfiguration:
@@ -161,6 +190,13 @@ class ConfigurationStore:
             configuration.network_interface = (network_interface or None)
             if runtime_mode:
                 configuration.runtime_mode = normalize_runtime_mode(runtime_mode)
+            if role:
+                configuration.role = normalize_role(role)
+            if transport:
+                configuration.transport = normalize_transport_mode(
+                    transport,
+                    default="pycipsim" if configuration.role == "target" else "pycomm3",
+                )
             if allowed_hosts is not None:
                 configuration.allowed_hosts = parse_allowed_hosts(allowed_hosts)
             if allow_external is not None:
