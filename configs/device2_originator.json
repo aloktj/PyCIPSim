@@ -1,7 +1,7 @@
 {
   "name": "Device2 Originator",
   "role": "originator",
-  "transport": "pycipsim",
+  "transport": "enip",
   "target": {
     "ip": "172.16.0.150",
     "port": 44818,
@@ -13,6 +13,11 @@
       "172.16.0.150"
     ],
     "allow_external": false
+  },
+  "listener": {
+    "host": "172.16.0.250",
+    "port": 44818,
+    "interface": "enp0s9"
   },
   "metadata": {
     "forward_open": {

@@ -52,6 +52,25 @@ def test_simulator_configuration_listener_defaults() -> None:
     assert config.listener_port == 44818
 
 
+def test_simulator_configuration_listener_overrides() -> None:
+    config = SimulatorConfiguration.from_dict(
+        {
+            "name": "Overrides",
+            "target": {"ip": "1.1.1.1", "port": 44818},
+            "assemblies": [],
+            "listener": {
+                "host": "172.16.0.250",
+                "port": 9000,
+                "interface": "enp0s9",
+            },
+        }
+    )
+
+    assert config.listener_host == "172.16.0.250"
+    assert config.listener_port == 9000
+    assert config.listener_interface == "enp0s9"
+
+
 def test_forward_open_metadata_generation() -> None:
     config = SimulatorConfiguration.from_dict(
         {

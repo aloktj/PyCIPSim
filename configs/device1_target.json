@@ -1,11 +1,11 @@
 {
   "name": "Device1 Target",
   "role": "target",
-  "transport": "pycipsim",
+  "transport": "enip",
   "target": {
     "ip": "172.16.0.150",
     "port": 44818,
-    "receive_address": "172.16.0.150",
+    "receive_address": null,
     "multicast": false,
     "interface": "enp0s9",
     "mode": "live",
@@ -13,6 +13,11 @@
       "172.16.0.250"
     ],
     "allow_external": false
+  },
+  "listener": {
+    "host": "172.16.0.150",
+    "port": 44818,
+    "interface": "enp0s9"
   },
   "metadata": {
     "forward_open": {
