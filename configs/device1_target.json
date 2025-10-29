@@ -1,7 +1,7 @@
 {
   "name": "Device1 Target",
   "role": "target",
-  "transport": "pycipsim",
+  "transport": "enip",
   "target": {
     "ip": "172.16.0.150",
     "port": 44818,
