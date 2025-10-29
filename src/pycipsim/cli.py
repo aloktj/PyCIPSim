@@ -26,7 +26,8 @@ from .engine import (
     run_scenarios_parallel,
 )
 from .logging_config import configure_logging
-from .runtime import AssemblyHost, CIPIORuntime, ConnectionManager
+from .runtime import AssemblyHost, ConnectionManager
+from .runtime.cip_io import CIPIORuntime
 from .runtime.enip_server import ENIPServer
 from .session import CIPSession, SessionConfig, TransportError
 from .target import CIPTargetRuntime

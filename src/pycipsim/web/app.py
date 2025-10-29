@@ -23,7 +23,7 @@ from ..config_store import (
 )
 from ..configuration import CIP_SIGNAL_TYPES
 from ..handshake import HandshakePhase, HandshakeResult, HandshakeStep, perform_handshake
-from ..runtime import CIPIORuntime
+from ..runtime.cip_io import CIPIORuntime
 from ..runtime.enip_target import ENIPTargetRuntime
 from ..target import CIPTargetRuntime
 from ..session import CIPSession, SessionConfig
