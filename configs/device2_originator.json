@@ -1,0 +1,94 @@
+{
+  "name": "Device2 Originator",
+  "role": "originator",
+  "transport": "enip",
+  "target": {
+    "ip": "172.16.0.150",
+    "port": 44818,
+    "receive_address": null,
+    "multicast": false,
+    "interface": "enp0s9",
+    "mode": "live",
+    "allowed_hosts": [
+      "172.16.0.150"
+    ],
+    "allow_external": false
+  },
+  "metadata": {
+    "forward_open": {
+      "application_class": 4,
+      "application_instance": 1,
+      "o_to_t_instance": 100,
+      "t_to_o_instance": 101,
+      "o_to_t_size": 16,
+      "t_to_o_size": 16,
+      "o_to_t_header_bytes": 4,
+      "t_to_o_header_bytes": 4,
+      "o_to_t_rpi_us": 200000,
+      "t_to_o_rpi_us": 200000,
+      "transport_type_trigger": 1,
+      "connection_serial": 37741,
+      "vendor_id": 71,
+      "originator_serial": 71,
+      "o_to_t_connection_id": 18578,
+      "t_to_o_connection_id": 10380,
+      "o_to_t_connection_type": "point_to_point",
+      "t_to_o_connection_type": "point_to_point",
+      "timeout_multiplier": 2
+    }
+  },
+  "assemblies": [
+    {
+      "id": 100,
+      "name": "Device2Outputs",
+      "direction": "output",
+      "size_bits": 128,
+      "signals": [
+        {
+          "name": "Heartbeat",
+          "offset": 0,
+          "type": "USINT",
+          "value": "0"
+        },
+        {
+          "name": "CommandWord",
+          "offset": 8,
+          "type": "UINT",
+          "value": "0"
+        },
+        {
+          "name": "Setpoint",
+          "offset": 24,
+          "type": "UDINT",
+          "value": "0"
+        }
+      ]
+    },
+    {
+      "id": 101,
+      "name": "Device2Inputs",
+      "direction": "input",
+      "size_bits": 128,
+      "signals": [
+        {
+          "name": "Status",
+          "offset": 0,
+          "type": "USINT",
+          "value": "0"
+        },
+        {
+          "name": "FaultCode",
+          "offset": 8,
+          "type": "UINT",
+          "value": "0"
+        },
+        {
+          "name": "Measurement",
+          "offset": 24,
+          "type": "UDINT",
+          "value": "0"
+        }
+      ]
+    }
+  ]
+}

@@ -10,7 +10,7 @@ from enum import Enum
 from typing import Any, Callable, Dict, Iterable, List, Optional, Protocol, Tuple
 
 from .cip import format_path
-from .session import SessionConfig
+from .session import PyCipSimClientTransport, SessionConfig
 
 
 class HandshakePhase(str, Enum):
@@ -119,6 +119,47 @@ def _resolve_driver(config: SessionConfig) -> HandshakeDriver:
     return _DriverAdapter()
 
 
+def _perform_pycipsim_handshake(
+    config: SessionConfig,
+    *,
+    simulate: bool = False,
+) -> HandshakeResult:
+    """Perform the lightweight UDP HELLO handshake against a PyCIPSim target."""
+
+    start = time.perf_counter()
+    steps: List[HandshakeStep] = []
+
+    if simulate:
+        steps.append(
+            HandshakeStep(
+                HandshakePhase.TCP_CONNECT,
+                True,
+                "Simulated UDP HELLO",
+            )
+        )
+        return HandshakeResult(True, steps, duration_ms=_elapsed_ms(start))
+
+    transport = PyCipSimClientTransport(config)
+    try:
+        transport.connect()
+    except Exception as exc:
+        detail = f"UDP HELLO failed: {exc}"
+        steps.append(HandshakeStep(HandshakePhase.TCP_CONNECT, False, detail))
+        return HandshakeResult(False, steps, error=detail, duration_ms=_elapsed_ms(start))
+    else:
+        steps.append(
+            HandshakeStep(
+                HandshakePhase.TCP_CONNECT,
+                True,
+                "UDP HELLO acknowledged by target",
+            )
+        )
+        return HandshakeResult(True, steps, duration_ms=_elapsed_ms(start))
+    finally:
+        with contextlib.suppress(Exception):
+            transport.disconnect()
+
+
 def perform_handshake(
     config: SessionConfig,
     *,
@@ -130,6 +171,10 @@ def perform_handshake(
 
     start = time.perf_counter()
     steps: List[HandshakeStep] = []
+
+    transport_mode = (config.transport or "pycomm3").lower()
+    if transport_mode == "pycipsim":
+        return _perform_pycipsim_handshake(config, simulate=simulate)
 
     if simulate:
         steps.extend(
