@@ -1,12 +1,13 @@
 """Command line interface for PyCIPSim."""
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import tempfile
 import time
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Any, Dict, Iterable, List, Optional
 
 import click
 from rich.console import Console
@@ -389,6 +390,145 @@ def web(host: str, port: int, reload: bool) -> None:
     app = get_app()
     uvicorn.run(app, host=host, port=port, reload=reload)
 
+
+@cli.command()
+@click.option(
+    "--config",
+    "config_path",
+    type=click.Path(exists=True, dir_okay=False),
+    help="Simulator configuration JSON or YAML file.",
+)
+@click.option(
+    "--assembly-file",
+    type=click.Path(exists=True, dir_okay=False),
+    help="Assembly definitions in JSON or YAML.",
+)
+@click.option("--name", default="TargetServer", show_default=True, help="Configuration name when using --assembly-file.")
+@click.option("--listener-host", type=str, help="Override the listener host binding.")
+@click.option(
+    "--listener-port",
+    type=int,
+    help="Override the listener TCP/UDP port (0 selects a random free port).",
+)
+@click.option("--listener-interface", type=str, help="Override the listener network interface identifier.")
+@click.option(
+    "--duration",
+    type=float,
+    help="Seconds to run before exiting. Runs until interrupted when omitted.",
+)
+def serve(
+    config_path: Optional[str],
+    assembly_file: Optional[str],
+    name: str,
+    listener_host: Optional[str],
+    listener_port: Optional[int],
+    listener_interface: Optional[str],
+    duration: Optional[float],
+) -> None:
+    """Start the simulator in target mode and expose assemblies to originators."""
+
+    if not config_path and not assembly_file:
+        raise click.UsageError("Provide either --config or --assembly-file.")
+    if config_path and assembly_file:
+        raise click.UsageError("Use --config or --assembly-file, not both.")
+    if duration is not None and duration < 0:
+        raise click.BadParameter("duration must be zero or positive", param_hint="duration")
+
+    if config_path:
+        structure = _load_structure(Path(config_path))
+        if not isinstance(structure, dict):
+            raise click.ClickException("Configuration file must contain an object at the top level.")
+        data = structure
+    else:
+        structure = _load_structure(Path(assembly_file))
+        assemblies = _load_assemblies_payload(structure)
+        data = {
+            "name": name,
+            "role": "target",
+            "listener": {},
+            "target": {"ip": "127.0.0.1", "port": 44818},
+            "assemblies": assemblies,
+        }
+
+    try:
+        config = SimulatorConfiguration.from_dict(data)
+    except ConfigurationError as exc:
+        raise click.ClickException(f"Invalid configuration: {exc}") from exc
+
+    if config.role != "target":
+        console.print("[yellow]Overriding simulator role to 'target' for the serve command.[/yellow]")
+        config.role = "target"
+
+    if listener_host:
+        config.listener_host = listener_host
+    elif not config.listener_host:
+        config.listener_host = "0.0.0.0"
+    if listener_port is not None:
+        config.listener_port = listener_port
+    if listener_interface is not None:
+        config.listener_interface = listener_interface or None
+    if not config.listener_host:
+        config.listener_host = "0.0.0.0"
+
+    cycle_interval = max(0.05, config.default_production_interval_seconds())
+
+    with tempfile.TemporaryDirectory(prefix="pycipsim-serve-") as tmpdir:
+        store = ConfigurationStore(storage_path=Path(tmpdir) / "config.json")
+        store.upsert(config)
+
+        host = AssemblyHost(config.assemblies, cycle_interval=cycle_interval)
+
+        def _input_callback(assembly_id: int, values: Dict[str, object]) -> None:
+            for signal_name, signal_value in values.items():
+                if signal_value is None:
+                    continue
+                with contextlib.suppress(Exception):
+                    store.update_signal_value(
+                        config.name, assembly_id, signal_name, str(signal_value)
+                    )
+
+        host.set_input_callback(_input_callback)
+        for assembly in config.assemblies:
+            if (assembly.direction or "").lower() not in {"output", "out"}:
+                continue
+            host.register_producer(
+                assembly.assembly_id,
+                _build_store_producer_cli(store, config.name, assembly.assembly_id),
+            )
+        _sync_host_outputs_cli(host, config)
+
+        server = ENIPServer(
+            host=config.listener_host or "0.0.0.0",
+            tcp_port=config.listener_port,
+            udp_port=config.listener_port,
+            connection_manager=ConnectionManager(),
+            reaper_interval=max(cycle_interval, 0.5),
+            assembly_host=host,
+        )
+        try:
+            server.start()
+        except Exception as exc:  # pragma: no cover - server startup failure
+            raise click.ClickException(f"Failed to start ENIP server: {exc}") from exc
+
+        actual_port = server.tcp_port
+        outputs = [a for a in config.assemblies if (a.direction or "").lower() in {"output", "out"}]
+        inputs = [a for a in config.assemblies if (a.direction or "").lower() in {"input", "in"}]
+        console.print(
+            f"Target simulator listening on {config.listener_host}:{actual_port} "
+            f"with {len(outputs)} outputs and {len(inputs)} inputs. Press Ctrl+C to stop."
+        )
+
+        stop_at = time.monotonic() + duration if duration is not None else None
+        try:
+            while True:
+                if stop_at is not None and time.monotonic() >= stop_at:
+                    break
+                time.sleep(0.1)
+        except KeyboardInterrupt:
+            console.print("\nStopping target server...")
+        finally:
+            server.stop()
+        console.print("Target server stopped.")
 
 @cli.command("list-profiles")
 def list_profiles() -> None:

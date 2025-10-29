@@ -273,6 +273,7 @@ class AssemblyDefinition:
     direction: str
     size_bits: int = 0
     signals: List[SignalDefinition] = field(default_factory=list)
+    production_interval_ms: Optional[int] = None
 
     @classmethod
     def from_dict(cls, raw: Dict[str, Any]) -> "AssemblyDefinition":
@@ -297,22 +298,58 @@ class AssemblyDefinition:
             if size_bits < 0:
                 raise ConfigurationError(f"Assembly '{name}' cannot have a negative size.")
         signals = [SignalDefinition.from_dict(sig) for sig in raw.get("signals", [])]
+        interval_ms: Optional[int] = None
+        if "production_interval_ms" in raw:
+            try:
+                candidate = raw["production_interval_ms"]
+                interval_ms = int(str(candidate)) if candidate is not None else None
+            except (TypeError, ValueError) as exc:  # pragma: no cover - defensive
+                raise ConfigurationError(
+                    f"Assembly '{name}' has invalid production interval '{raw['production_interval_ms']}'."
+                ) from exc
+            if interval_ms is not None and interval_ms < 0:
+                raise ConfigurationError(
+                    f"Assembly '{name}' cannot have a negative production interval."
+                )
+        elif "production_interval" in raw:
+            try:
+                candidate = raw["production_interval"]
+                interval_ms = int(float(str(candidate)) * 1000)
+            except (TypeError, ValueError) as exc:  # pragma: no cover - defensive
+                raise ConfigurationError(
+                    f"Assembly '{name}' has invalid production interval '{raw['production_interval']}'."
+                ) from exc
+            if interval_ms is not None and interval_ms < 0:
+                raise ConfigurationError(
+                    f"Assembly '{name}' cannot have a negative production interval."
+                )
         return cls(
             assembly_id=assembly_id,
             name=name,
             direction=str(direction),
             size_bits=size_bits,
             signals=signals,
+            production_interval_ms=interval_ms,
         )
 
     def to_dict(self) -> Dict[str, Any]:
-        return {
+        payload: Dict[str, Any] = {
             "id": self.assembly_id,
             "name": self.name,
             "direction": self.direction,
             "size_bits": self.size_bits,
             "signals": [signal.to_dict() for signal in self.signals],
         }
+        if self.production_interval_ms is not None:
+            payload["production_interval_ms"] = self.production_interval_ms
+        return payload
+
+    def production_interval_seconds(self) -> float:
+        """Return the configured production interval in seconds."""
+
+        if self.production_interval_ms is None or self.production_interval_ms <= 0:
+            return 0.0
+        return self.production_interval_ms / 1000.0
 
     def iter_signals(self) -> Iterable[SignalDefinition]:
         """Iterate over contained signals."""
@@ -394,6 +431,10 @@ class SimulatorConfiguration:
     allowed_hosts: Tuple[str, ...] = field(default_factory=tuple)
     allow_external: bool = False
     assemblies: List[AssemblyDefinition] = field(default_factory=list)
+    role: str = "originator"
+    listener_host: str = "0.0.0.0"
+    listener_port: int = 44818
+    listener_interface: Optional[str] = None
 
     def max_connection_size_bytes(self) -> int:
         """Return the maximum assembly size in bytes for forward-open sizing."""
@@ -639,6 +680,13 @@ class SimulatorConfiguration:
 
         return metadata
 
+    def max_connection_size_bytes(self) -> int:
+        """Return the maximum assembly size in bytes for forward-open sizing."""
+
+        if not self.assemblies:
+            return 0
+        return max(_total_bytes(assembly.size_bits) for assembly in self.assemblies)
+
     @classmethod
     def from_dict(cls, raw: Dict[str, Any]) -> "SimulatorConfiguration":
         try:
@@ -720,6 +768,12 @@ class SimulatorConfiguration:
             },
             "metadata": self.metadata,
             "assemblies": [assembly.to_dict() for assembly in self.assemblies],
+            "role": self.role,
+            "listener": {
+                "host": self.listener_host,
+                "port": self.listener_port,
+                "interface": self.listener_interface,
+            },
         }
 
     @property

@@ -1,6 +1,7 @@
 """FastAPI application exposing the web configuration UI."""
 from __future__ import annotations
 
+import contextlib
 import json
 import socket
 import threading
@@ -283,14 +284,6 @@ def get_app(
                 last_handshake = manager.last_handshake()
                 if last_handshake and last_handshake[0] == current.name:
                     handshake_result = last_handshake[1]
-        forward_open_effective = None
-        forward_open_overrides: Dict[str, Any] | None = None
-        if current:
-            forward_open_effective = current.build_forward_open_metadata()
-            meta = current.metadata.get("forward_open") if isinstance(current.metadata, dict) else None
-            if isinstance(meta, dict):
-                forward_open_overrides = meta
-
         return templates.TemplateResponse(
             request,
             "index.html",
@@ -303,8 +296,6 @@ def get_app(
                 "signal_types": CIP_SIGNAL_TYPES,
                 "network_interfaces": _detect_network_interfaces(),
                 "handshake_labels": {phase.value: label for phase, label in _HANDSHAKE_LABELS.items()},
-                "forward_open_effective": forward_open_effective,
-                "forward_open_overrides": forward_open_overrides,
                 "message": message,
                 "error": error,
             },
@@ -409,20 +400,6 @@ def get_app(
         except ConfigurationError as exc:
             return redirect("/", error=str(exc))
         return redirect("/", message=f"Target for '{name}' updated.")
-
-    @app.post("/configs/{name}/forward-open")
-    async def update_forward_open(name: str, request: Request) -> RedirectResponse:
-        try:
-            manager.ensure_config_mutable(name)
-            form = await request.form()
-            store.update_forward_open(name, form.multi_items())
-        except RuntimeError as exc:
-            return redirect("/", error=str(exc))
-        except ConfigurationNotFoundError:
-            return redirect("/", error="Configuration not found")
-        except ConfigurationError as exc:
-            return redirect("/", error=str(exc))
-        return redirect("/", message="Forward-open settings updated.")
 
     @app.post("/configs/{name}/assemblies/{assembly_id}/signals/{signal_name}/details")
     async def update_signal_details(
