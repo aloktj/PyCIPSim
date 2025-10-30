@@ -10,11 +10,21 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
 import click
+from rich import box
+from rich.columns import Columns
 from rich.console import Console
+from rich.panel import Panel
 from rich.table import Table
+from rich.text import Text
+from rich.tree import Tree
 
 from .config_store import ConfigurationNotFoundError, ConfigurationStore
-from .configuration import SimulatorConfiguration, normalize_role, normalize_transport_mode
+from .configuration import (
+    ConfigurationError,
+    SimulatorConfiguration,
+    normalize_role,
+    normalize_transport_mode,
+)
 from .device import DeviceProfile, ServiceRequest, ServiceResponse, make_default_profiles
 from .engine import (
     BenchmarkResult,
@@ -275,6 +285,20 @@ def runtime(
         console.print("Stopping originator runtime...")
     finally:
         runtime.stop()
+
+
+@cli.command()
+@click.option(
+    "--config-file",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    required=True,
+    help="Simulator configuration JSON or YAML file.",
+)
+def inspect(config_file: Path) -> None:
+    """Display a rich summary of a simulator configuration."""
+
+    config = _load_simulator_config(config_file)
+    _render_configuration_overview(config)
 
 
 @cli.command()
@@ -578,6 +602,109 @@ def scaffold(output: str) -> None:
     console.print(f"Scenario template written to {output_path}")
 
 
+def _render_configuration_overview(config: SimulatorConfiguration) -> None:
+    role_label = Text((config.role or "originator").replace("_", " ").title(), style="bold magenta")
+    overview = Table.grid(expand=True)
+    overview.add_column(justify="left")
+    overview.add_column(justify="right")
+    overview.add_row(Text(config.name, style="bold cyan"), role_label)
+    transport_mode = (config.transport or "pycomm3").replace("_", " ")
+    runtime_mode = (config.runtime_mode or "simulated").replace("_", " ")
+    assembly_summary = f"{len(config.assemblies)} assemblies" if config.assemblies else "No assemblies"
+    overview.add_row(
+        Text(f"{transport_mode} transport • {runtime_mode}", style="dim"),
+        Text(assembly_summary, style="dim"),
+    )
+    console.print(Panel(overview, title="Simulator Overview", border_style="bright_cyan"))
+
+    connection_table = Table(box=box.ROUNDED, expand=True)
+    connection_table.add_column("Field", style="cyan", no_wrap=True)
+    connection_table.add_column("Value", style="white", overflow="fold")
+    connection_table.add_row("Target", f"{config.target_ip}:{config.target_port}")
+    if config.network_interface:
+        connection_table.add_row("Network interface", config.network_interface)
+    if config.receive_address:
+        connection_table.add_row("Receive address", config.receive_address)
+    connection_table.add_row("Transport", transport_mode.title())
+    connection_table.add_row("Runtime mode", runtime_mode.title())
+    connection_table.add_row("Multicast", "Yes" if getattr(config, "multicast", False) else "No")
+    allowed_hosts = "\n".join(config.allowed_hosts) if config.allowed_hosts else "—"
+    connection_table.add_row("Allowed hosts", allowed_hosts)
+    connection_table.add_row("Allow external", "Yes" if config.allow_external else "No")
+    listener_host = getattr(config, "listener_host", None)
+    listener_port = getattr(config, "listener_port", None)
+    if listener_host or listener_port is not None:
+        host_text = listener_host or "0.0.0.0"
+        if listener_port is not None:
+            host_text = f"{host_text}:{listener_port}"
+        connection_table.add_row("Listener", host_text)
+    listener_interface = getattr(config, "listener_interface", None)
+    if listener_interface:
+        connection_table.add_row("Listener iface", listener_interface)
+
+    metadata_table = Table(box=box.ROUNDED, expand=True)
+    metadata_table.add_column("Key", style="magenta", no_wrap=True)
+    metadata_table.add_column("Value", style="white", overflow="fold")
+    if config.metadata:
+        for key, value in sorted(config.metadata.items()):
+            metadata_table.add_row(str(key), _format_metadata_value(value))
+    else:
+        metadata_table.add_row("—", "No metadata entries")
+
+    console.print(
+        Columns(
+            [
+                Panel(connection_table, title="Connection", border_style="bright_blue"),
+                Panel(metadata_table, title="Metadata", border_style="bright_magenta"),
+            ],
+            equal=True,
+            expand=True,
+        )
+    )
+
+    assembly_tree = Tree("[bold]Assemblies[/bold]")
+    if config.assemblies:
+        for assembly in config.assemblies:
+            direction = (assembly.direction or "").replace("_", " ").strip() or "Unspecified"
+            direction_label = direction.title()
+            summary_bits = f"{assembly.size_bits} bits"
+            branch_label = f"[cyan]#{assembly.assembly_id}[/cyan] {assembly.name or 'Assembly'} • {direction_label} • {summary_bits}"
+            if assembly.production_interval_ms:
+                branch_label += f" • {assembly.production_interval_ms} ms"
+            branch = assembly_tree.add(branch_label)
+            if assembly.signals:
+                for signal in assembly.signals:
+                    branch.add(_render_signal_line(signal))
+            else:
+                branch.add("[dim]No signals defined[/dim]")
+    else:
+        assembly_tree.add("[dim]No assemblies defined[/dim]")
+
+    console.print(Panel(assembly_tree, title="Assemblies", border_style="yellow"))
+
+
+def _render_signal_line(signal: Any) -> str:
+    bits = signal.bit_length()
+    pieces = [f"@{signal.offset}", signal.name, f"[{signal.signal_type}]"]
+    if bits:
+        pieces.append(f"{bits}b")
+    if signal.value not in (None, ""):
+        pieces.append(f"= {signal.value}")
+    line = " • ".join(pieces)
+    if getattr(signal, "is_padding", False):
+        return f"[dim]{line} (padding)[/dim]"
+    return line
+
+
+def _format_metadata_value(value: Any) -> str:
+    if isinstance(value, (dict, list)):
+        try:
+            return json.dumps(value, indent=2, sort_keys=True)
+        except TypeError:
+            return str(value)
+    return str(value)
+
+
 def _load_structure(path: Path) -> Any:
     try:
         return json.loads(path.read_text(encoding="utf-8"))
@@ -760,12 +887,19 @@ def _render_multi_results(results: Dict[str, SimulationResult]) -> None:
 
 def _load_simulator_config(path: Path) -> SimulatorConfiguration:
     try:
-        payload = json.loads(path.read_text())
-    except OSError as exc:
-        raise click.ClickException(f"Failed to read configuration file: {exc}") from exc
-    except json.JSONDecodeError as exc:
-        raise click.ClickException(f"Configuration file is not valid JSON: {exc}") from exc
-    return SimulatorConfiguration.from_dict(payload)
+        payload = _load_structure(path)
+    except click.ClickException:
+        raise
+    except Exception as exc:  # pragma: no cover - defensive fallback
+        raise click.ClickException(f"Failed to load configuration file: {exc}") from exc
+
+    if not isinstance(payload, dict):
+        raise click.ClickException("Configuration file must contain an object at the top level.")
+
+    try:
+        return SimulatorConfiguration.from_dict(payload)
+    except ConfigurationError as exc:
+        raise click.ClickException(f"Invalid configuration: {exc}") from exc
 
 
 def _load_profile(name: Optional[str], profile_file: Optional[str]) -> DeviceProfile:
