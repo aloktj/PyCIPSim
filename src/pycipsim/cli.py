@@ -14,7 +14,16 @@ from rich.console import Console
 from rich.table import Table
 
 from .config_store import ConfigurationNotFoundError, ConfigurationStore
-from .configuration import SimulatorConfiguration, normalize_role, normalize_transport_mode
+from .configuration import (
+    CIP_SIGNAL_TYPES,
+    RUNTIME_MODES,
+    SIMULATOR_ROLES,
+    TRANSPORT_MODES,
+    ConfigurationError,
+    SimulatorConfiguration,
+    normalize_role,
+    normalize_transport_mode,
+)
 from .device import DeviceProfile, ServiceRequest, ServiceResponse, make_default_profiles
 from .engine import (
     BenchmarkResult,
@@ -25,6 +34,7 @@ from .engine import (
     run_benchmark,
     run_scenarios_parallel,
 )
+from .handshake import HandshakePhase, HandshakeResult
 from .logging_config import configure_logging
 from .runtime import AssemblyHost, ConnectionManager
 from .runtime.cip_io import CIPIORuntime
@@ -32,16 +42,896 @@ from .runtime.enip_server import ENIPServer
 from .session import CIPSession, SessionConfig, TransportError
 from .target import CIPTargetRuntime
 from .runtime.enip_target import ENIPTargetRuntime
+from .web.app import SimulatorManager
 
 console = Console()
 
 
+def _get_store(obj: Dict[str, Any]) -> ConfigurationStore:
+    store = obj.get("store")
+    if not isinstance(store, ConfigurationStore):
+        store = ConfigurationStore()
+        obj["store"] = store
+    return store
+
+
+def _get_manager(obj: Dict[str, Any]) -> SimulatorManager:
+    manager = obj.get("manager")
+    if not isinstance(manager, SimulatorManager):
+        manager = SimulatorManager()
+        obj["manager"] = manager
+    return manager
+
+
+_HANDSHAKE_LABELS = {
+    HandshakePhase.TCP_CONNECT: "TCP handshake",
+    HandshakePhase.ENIP_SESSION: "ENIP session",
+    HandshakePhase.CIP_FORWARD_OPEN: "CIP forward open",
+}
+
+
+def _render_handshake(handshake: HandshakeResult) -> None:
+    table = Table(title="Handshake Result")
+    table.add_column("Phase")
+    table.add_column("Success")
+    table.add_column("Detail")
+
+    if not handshake.steps:
+        table.add_row("N/A", "-", "Handshake did not run any steps.")
+    else:
+        for step in handshake.steps:
+            label = _HANDSHAKE_LABELS.get(step.phase, step.phase.value)
+            detail = step.detail or ""
+            table.add_row(label, "Yes" if step.success else "No", detail)
+
+    console.print(table)
+    console.print(f"Duration: {handshake.duration_ms:.2f} ms")
+    if handshake.error:
+        console.print(f"[red]Error: {handshake.error}[/red]")
+
+
+def _format_handshake_failure(handshake: HandshakeResult) -> str:
+    failure = next((step for step in handshake.steps if not step.success), None)
+    detail = handshake.error or (failure.detail if failure else "Unknown error")
+    if failure is None:
+        return f"Handshake failed: {detail}"
+    label = _HANDSHAKE_LABELS.get(failure.phase, failure.phase.value)
+    return f"{label} failed: {detail}"
+
+
+def _render_configuration(config: SimulatorConfiguration) -> None:
+    summary = Table(title=f"Configuration '{config.name}'", show_header=False)
+    summary.add_column("Field", style="cyan", no_wrap=True)
+    summary.add_column("Value", overflow="fold")
+    summary.add_row("Role", (config.role or "originator").title())
+    summary.add_row("Runtime mode", (config.runtime_mode or "simulated").title())
+    transport_label = (config.transport or "-").upper() if config.transport else "-"
+    summary.add_row("Transport", transport_label)
+    summary.add_row("Target", f"{config.target_ip}:{config.target_port}")
+    if config.receive_address:
+        summary.add_row("Receive address", config.receive_address)
+    summary.add_row("Multicast", "Yes" if config.multicast else "No")
+    if config.network_interface:
+        summary.add_row("Network interface", config.network_interface)
+    summary.add_row(
+        "Allowed hosts",
+        ", ".join(config.allowed_hosts) if config.allowed_hosts else "-",
+    )
+    summary.add_row(
+        "Allow external",
+        "Yes" if config.allow_external else "No",
+    )
+    console.print(summary)
+
+    if config.metadata:
+        metadata_table = Table(title="Metadata")
+        metadata_table.add_column("Key", style="cyan", no_wrap=True)
+        metadata_table.add_column("Value", overflow="fold")
+        for key, value in sorted(config.metadata.items()):
+            metadata_table.add_row(str(key), json.dumps(value) if isinstance(value, (dict, list)) else str(value))
+        console.print(metadata_table)
+
+    if not config.assemblies:
+        console.print("[yellow]No assemblies defined for this configuration.[/yellow]")
+        return
+
+    for assembly in config.assemblies:
+        header = Table(title=f"Assembly {assembly.assembly_id} ({assembly.name})", show_header=False)
+        header.add_column("Field", style="cyan", no_wrap=True)
+        header.add_column("Value", overflow="fold")
+        header.add_row("Direction", (assembly.direction or "output").title())
+        if assembly.size_bits is not None:
+            header.add_row("Size (bits)", str(assembly.size_bits))
+        if assembly.production_interval_ms is not None:
+            header.add_row("Production interval (ms)", str(assembly.production_interval_ms))
+        console.print(header)
+
+        signal_table = Table(show_header=True)
+        signal_table.add_column("Name")
+        signal_table.add_column("Offset", justify="right")
+        signal_table.add_column("Type")
+        signal_table.add_column("Size (bits)", justify="right")
+        signal_table.add_column("Value")
+        for signal in assembly.signals:
+            label = signal.name + (" (padding)" if signal.is_padding else "")
+            signal_table.add_row(
+                label,
+                "" if signal.offset is None else str(signal.offset),
+                signal.signal_type,
+                "" if signal.size_bits is None else str(signal.size_bits),
+                "" if signal.value is None else str(signal.value),
+            )
+        console.print(signal_table)
+
+
 @click.group()
 @click.option("--verbose", is_flag=True, help="Enable verbose logging output.")
-def cli(verbose: bool) -> None:
+@click.option(
+    "--store-path",
+    type=click.Path(dir_okay=False, path_type=Path),
+    help="Override the configuration store path (defaults to ~/.pycipsim/configurations.json).",
+)
+@click.pass_context
+def cli(ctx: click.Context, verbose: bool, store_path: Optional[Path]) -> None:
     """Entry point for the PyCIPSim toolkit."""
 
     configure_logging(verbose=verbose)
+    ctx.ensure_object(dict)
+    storage = store_path
+    ctx.obj.setdefault("store", ConfigurationStore(storage_path=storage))
+    ctx.obj.setdefault("manager", SimulatorManager())
+
+
+@cli.group()
+@click.pass_context
+def configs(ctx: click.Context) -> None:
+    """Manage simulator configurations via the persistent store."""
+
+    ctx.ensure_object(dict)
+
+
+@configs.command("list")
+@click.pass_obj
+def list_configs(obj: Dict[str, Any]) -> None:
+    """List stored simulator configurations."""
+
+    store = _get_store(obj)
+    configs = sorted(store.list(), key=lambda cfg: cfg.name.lower())
+    if not configs:
+        console.print("[yellow]No stored configurations found.[/yellow]")
+        return
+
+    table = Table(title="Stored Configurations")
+    table.add_column("Name")
+    table.add_column("Role")
+    table.add_column("Mode")
+    table.add_column("Transport")
+    table.add_column("Target")
+    table.add_column("Assemblies", justify="right")
+
+    for config in configs:
+        target = f"{config.target_ip}:{config.target_port}"
+        role = (config.role or "originator").title()
+        mode = (config.runtime_mode or "simulated").title()
+        transport = config.transport.upper() if config.transport else "-"
+        table.add_row(config.name, role, mode, transport, target, str(len(config.assemblies)))
+
+    console.print(table)
+
+
+@configs.command("show")
+@click.argument("name")
+@click.pass_obj
+def show_config(obj: Dict[str, Any], name: str) -> None:
+    """Display configuration details, including assemblies and signals."""
+
+    store = _get_store(obj)
+    try:
+        config = store.get(name)
+    except ConfigurationNotFoundError as exc:
+        raise click.ClickException(f"Configuration '{name}' not found") from exc
+
+    _render_configuration(config)
+
+
+@configs.command("import")
+@click.argument("path", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.pass_obj
+def import_config(obj: Dict[str, Any], path: Path) -> None:
+    """Import a configuration file into the persistent store."""
+
+    try:
+        payload = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise click.ClickException(f"Failed to read configuration: {exc}") from exc
+
+    try:
+        data = json.loads(payload)
+    except json.JSONDecodeError as exc:
+        raise click.ClickException(f"Configuration file is not valid JSON: {exc}") from exc
+
+    try:
+        config = SimulatorConfiguration.from_dict(data)
+    except ConfigurationError as exc:
+        raise click.ClickException(f"Invalid configuration: {exc}") from exc
+
+    store = _get_store(obj)
+    store.upsert(config)
+    console.print(f"[green]Configuration '{config.name}' imported.[/green]")
+
+
+@configs.command("export")
+@click.argument("name")
+@click.option(
+    "--output",
+    type=click.Path(dir_okay=False, path_type=Path),
+    help="Write the configuration JSON to a file instead of stdout.",
+)
+@click.option("--indent", type=int, default=2, show_default=True, help="JSON indentation level.")
+@click.pass_obj
+def export_config(
+    obj: Dict[str, Any],
+    name: str,
+    output: Optional[Path],
+    indent: int,
+) -> None:
+    """Export a stored configuration as JSON."""
+
+    store = _get_store(obj)
+    try:
+        config = store.get(name)
+    except ConfigurationNotFoundError as exc:
+        raise click.ClickException(f"Configuration '{name}' not found") from exc
+
+    payload = json.dumps(config.to_dict(), indent=indent)
+    if output:
+        try:
+            output.write_text(payload, encoding="utf-8")
+        except OSError as exc:
+            raise click.ClickException(f"Failed to write {output}: {exc}") from exc
+        console.print(f"[green]Configuration '{name}' exported to {output}.[/green]")
+    else:
+        console.print(payload)
+
+
+@configs.command("delete")
+@click.argument("name")
+@click.option("--force", is_flag=True, help="Stop any active runtime before deleting.")
+@click.pass_obj
+def delete_config(obj: Dict[str, Any], name: str, force: bool) -> None:
+    """Remove a configuration from the store."""
+
+    store = _get_store(obj)
+    manager = _get_manager(obj)
+    try:
+        store.get(name)
+    except ConfigurationNotFoundError as exc:
+        raise click.ClickException(f"Configuration '{name}' not found") from exc
+
+    try:
+        manager.ensure_config_mutable(name)
+    except RuntimeError as exc:
+        if not force:
+            raise click.ClickException(str(exc)) from exc
+        manager.stop()
+
+    store.delete(name)
+    console.print(f"[green]Configuration '{name}' deleted.[/green]")
+
+
+@configs.command("set-target")
+@click.argument("name")
+@click.option("--ip", "ip", type=str, help="Target IP address.")
+@click.option("--port", "port", type=int, help="Target TCP port.")
+@click.option("--receive-address", type=str, help="Override the multicast receive address.")
+@click.option("--network-interface", type=str, help="Preferred network interface identifier.")
+@click.option(
+    "--runtime-mode",
+    type=click.Choice(RUNTIME_MODES, case_sensitive=False),
+    help="Runtime mode override (simulated or live).",
+)
+@click.option(
+    "--role",
+    type=click.Choice(SIMULATOR_ROLES, case_sensitive=False),
+    help="Simulator role override.",
+)
+@click.option(
+    "--transport",
+    type=click.Choice(TRANSPORT_MODES, case_sensitive=False),
+    help="Transport implementation override.",
+)
+@click.option(
+    "--allowed-host",
+    "allowed_hosts",
+    multiple=True,
+    help="Additional allowed host entries (repeat for multiple).",
+)
+@click.option(
+    "--clear-allowed-hosts",
+    is_flag=True,
+    help="Remove all allowed hosts before applying --allowed-host entries.",
+)
+@click.option(
+    "--allow-external",
+    "allow_external",
+    flag_value=True,
+    default=None,
+    help="Permit connections from non-whitelisted hosts.",
+)
+@click.option(
+    "--disallow-external",
+    "allow_external",
+    flag_value=False,
+    help="Require the allow list for all connections.",
+)
+@click.option("--multicast", "multicast_flag", flag_value=True, default=None, help="Enable multicast.")
+@click.option("--no-multicast", "multicast_flag", flag_value=False, help="Disable multicast.")
+@click.option(
+    "--clear-receive-address",
+    is_flag=True,
+    help="Clear any configured multicast receive address.",
+)
+@click.option(
+    "--clear-network-interface",
+    is_flag=True,
+    help="Clear the configured network interface binding.",
+)
+@click.pass_obj
+def set_target(
+    obj: Dict[str, Any],
+    name: str,
+    ip: Optional[str],
+    port: Optional[int],
+    receive_address: Optional[str],
+    network_interface: Optional[str],
+    runtime_mode: Optional[str],
+    role: Optional[str],
+    transport: Optional[str],
+    allowed_hosts: tuple[str, ...],
+    clear_allowed_hosts: bool,
+    allow_external: Optional[bool],
+    multicast_flag: Optional[bool],
+    clear_receive_address: bool,
+    clear_network_interface: bool,
+) -> None:
+    """Update target connection properties for a configuration."""
+
+    store = _get_store(obj)
+    manager = _get_manager(obj)
+    try:
+        config = store.get(name)
+    except ConfigurationNotFoundError as exc:
+        raise click.ClickException(f"Configuration '{name}' not found") from exc
+
+    try:
+        manager.ensure_config_mutable(name)
+    except RuntimeError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    target_ip = ip or config.target_ip
+    target_port = port if port is not None else config.target_port
+    receive_value: Optional[str]
+    if clear_receive_address:
+        receive_value = None
+    elif receive_address is not None:
+        receive_value = receive_address
+    else:
+        receive_value = config.receive_address
+
+    interface_value: Optional[str]
+    if clear_network_interface:
+        interface_value = None
+    elif network_interface is not None:
+        interface_value = network_interface
+    else:
+        interface_value = config.network_interface
+
+    if clear_allowed_hosts:
+        allowed_hosts_value: Optional[str] = ""
+    elif allowed_hosts:
+        allowed_hosts_value = ",".join(allowed_hosts)
+    else:
+        allowed_hosts_value = None
+
+    multicast_value = multicast_flag if multicast_flag is not None else config.multicast
+
+    try:
+        store.update_target(
+            name,
+            target_ip=target_ip,
+            target_port=str(target_port),
+            receive_address=receive_value,
+            multicast=multicast_value,
+            network_interface=interface_value,
+            runtime_mode=runtime_mode,
+            role=role,
+            transport=transport,
+            allowed_hosts=allowed_hosts_value,
+            allow_external=allow_external,
+        )
+    except ConfigurationError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    console.print(f"[green]Target for '{name}' updated.[/green]")
+
+
+@configs.group()
+@click.pass_context
+def assemblies(ctx: click.Context) -> None:
+    """Manage assemblies within a stored configuration."""
+
+    ctx.ensure_object(dict)
+
+
+@assemblies.command("list")
+@click.argument("name")
+@click.pass_obj
+def list_assemblies(obj: Dict[str, Any], name: str) -> None:
+    """List assemblies defined in a configuration."""
+
+    store = _get_store(obj)
+    try:
+        config = store.get(name)
+    except ConfigurationNotFoundError as exc:
+        raise click.ClickException(f"Configuration '{name}' not found") from exc
+
+    if not config.assemblies:
+        console.print(f"[yellow]Configuration '{name}' has no assemblies.[/yellow]")
+        return
+
+    table = Table(title=f"Assemblies in '{name}'")
+    table.add_column("ID", justify="right")
+    table.add_column("Name")
+    table.add_column("Direction")
+    table.add_column("Size (bits)", justify="right")
+    table.add_column("Signals", justify="right")
+    table.add_column("Production interval (ms)", justify="right")
+
+    for assembly in config.assemblies:
+        table.add_row(
+            str(assembly.assembly_id),
+            assembly.name,
+            (assembly.direction or "output").title(),
+            "" if assembly.size_bits is None else str(assembly.size_bits),
+            str(len(assembly.signals)),
+            "" if assembly.production_interval_ms is None else str(assembly.production_interval_ms),
+        )
+
+    console.print(table)
+
+
+@assemblies.command("add")
+@click.argument("name")
+@click.option("--assembly-id", required=True, help="Numeric assembly identifier (supports 0x prefix).")
+@click.option("--assembly-name", required=True, help="Human-readable assembly name.")
+@click.option(
+    "--direction",
+    required=True,
+    type=click.Choice(["input", "output", "in", "out"], case_sensitive=False),
+    help="Assembly direction.",
+)
+@click.option("--size-bits", required=True, help="Assembly size in bits.")
+@click.option(
+    "--production-interval",
+    help="Production interval in milliseconds (optional).",
+)
+@click.option(
+    "--position",
+    type=click.Choice(["end", "start", "before", "after"], case_sensitive=False),
+    default="end",
+    show_default=True,
+    help="Insertion point relative to existing assemblies.",
+)
+@click.option(
+    "--relative",
+    help="Reference assembly ID when using --position before/after.",
+)
+@click.pass_obj
+def add_assembly(
+    obj: Dict[str, Any],
+    name: str,
+    assembly_id: str,
+    assembly_name: str,
+    direction: str,
+    size_bits: str,
+    production_interval: Optional[str],
+    position: str,
+    relative: Optional[str],
+) -> None:
+    """Add a new assembly to a configuration."""
+
+    store = _get_store(obj)
+    manager = _get_manager(obj)
+    try:
+        manager.ensure_config_mutable(name)
+    except RuntimeError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    try:
+        store.add_assembly(
+            name,
+            assembly_id=assembly_id,
+            assembly_name=assembly_name,
+            direction=direction,
+            size_bits=size_bits,
+            position=position,
+            relative_assembly=relative,
+            production_interval=production_interval,
+        )
+    except (ConfigurationNotFoundError, ConfigurationError) as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    console.print(f"[green]Assembly '{assembly_name}' added to '{name}'.[/green]")
+
+
+@assemblies.command("update")
+@click.argument("name")
+@click.argument("assembly_id", type=int)
+@click.option("--new-id", help="Replacement assembly identifier.")
+@click.option(
+    "--direction",
+    type=click.Choice(["input", "output", "in", "out"], case_sensitive=False),
+    help="New assembly direction.",
+)
+@click.option("--size-bits", help="Updated size in bits.")
+@click.option("--production-interval", help="Updated production interval in ms.")
+@click.pass_obj
+def update_assembly(
+    obj: Dict[str, Any],
+    name: str,
+    assembly_id: int,
+    new_id: Optional[str],
+    direction: Optional[str],
+    size_bits: Optional[str],
+    production_interval: Optional[str],
+) -> None:
+    """Update assembly metadata such as ID, direction, or size."""
+
+    store = _get_store(obj)
+    manager = _get_manager(obj)
+    try:
+        config = store.get(name)
+    except ConfigurationNotFoundError as exc:
+        raise click.ClickException(f"Configuration '{name}' not found") from exc
+
+    try:
+        assembly = config.find_assembly(assembly_id)
+    except ConfigurationError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    try:
+        manager.ensure_config_mutable(name)
+    except RuntimeError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    resolved_id = new_id if new_id is not None else str(assembly.assembly_id)
+    resolved_direction = direction or (assembly.direction or "output")
+    if size_bits is None and assembly.size_bits is not None:
+        size_bits = str(assembly.size_bits)
+    resolved_size = size_bits
+    if production_interval is None and assembly.production_interval_ms is not None:
+        production_interval = str(assembly.production_interval_ms)
+
+    try:
+        updated = store.update_assembly(
+            name,
+            assembly_id,
+            new_id=resolved_id,
+            direction=resolved_direction,
+            size_bits=resolved_size,
+            production_interval=production_interval,
+        )
+    except ConfigurationError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    console.print(
+        f"[green]Assembly '{updated.name}' ({updated.assembly_id}) updated for '{name}'.[/green]"
+    )
+
+
+@assemblies.command("remove")
+@click.argument("name")
+@click.argument("assembly_id", type=int)
+@click.pass_obj
+def remove_assembly(obj: Dict[str, Any], name: str, assembly_id: int) -> None:
+    """Remove an assembly from a configuration."""
+
+    store = _get_store(obj)
+    manager = _get_manager(obj)
+    try:
+        manager.ensure_config_mutable(name)
+    except RuntimeError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    try:
+        store.remove_assembly(name, assembly_id)
+    except (ConfigurationNotFoundError, ConfigurationError) as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    console.print(f"[green]Assembly {assembly_id} removed from '{name}'.[/green]")
+
+
+@assemblies.group()
+@click.pass_context
+def signals(ctx: click.Context) -> None:
+    """Manage signals within an assembly."""
+
+    ctx.ensure_object(dict)
+
+
+@signals.command("set")
+@click.argument("name")
+@click.argument("assembly_id", type=int)
+@click.argument("signal_name")
+@click.option("--value", type=str, help="New signal value.")
+@click.option("--clear", is_flag=True, help="Clear the stored value.")
+@click.pass_obj
+def set_signal_value(
+    obj: Dict[str, Any],
+    name: str,
+    assembly_id: int,
+    signal_name: str,
+    value: Optional[str],
+    clear: bool,
+) -> None:
+    """Update the value of an output signal."""
+
+    if value is None and not clear:
+        raise click.UsageError("Provide --value or --clear to modify the signal.")
+    if clear and value is not None:
+        raise click.UsageError("--value and --clear are mutually exclusive.")
+
+    store = _get_store(obj)
+    payload = None if clear else value
+    try:
+        updated = store.update_signal_value(name, assembly_id, signal_name, payload)
+    except ConfigurationNotFoundError as exc:
+        raise click.ClickException(f"Configuration '{name}' not found") from exc
+    except ConfigurationError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    manager = _get_manager(obj)
+    manager.notify_output_update(name)
+
+    if clear:
+        console.print(f"[green]Signal '{signal_name}' cleared.[/green]")
+    else:
+        console.print(f"[green]Signal '{updated.name}' updated to '{value}'.[/green]")
+
+
+@signals.command("update")
+@click.argument("name")
+@click.argument("assembly_id", type=int)
+@click.argument("signal_name")
+@click.option("--new-name", help="Rename the signal.")
+@click.option("--offset", type=int, help="Set a new bit offset.")
+@click.option(
+    "--type",
+    "signal_type",
+    type=click.Choice(CIP_SIGNAL_TYPES, case_sensitive=False),
+    help="Update the signal type.",
+)
+@click.pass_obj
+def update_signal_metadata(
+    obj: Dict[str, Any],
+    name: str,
+    assembly_id: int,
+    signal_name: str,
+    new_name: Optional[str],
+    offset: Optional[int],
+    signal_type: Optional[str],
+) -> None:
+    """Update structural metadata for a signal."""
+
+    store = _get_store(obj)
+    manager = _get_manager(obj)
+    try:
+        config = store.get(name)
+    except ConfigurationNotFoundError as exc:
+        raise click.ClickException(f"Configuration '{name}' not found") from exc
+
+    try:
+        current = config.find_signal(assembly_id, signal_name)
+    except ConfigurationError as exc:
+        raise click.ClickException(str(exc)) from exc
+    resolved_name = new_name or current.name
+    resolved_offset = offset if offset is not None else current.offset or 0
+    resolved_type = signal_type or current.signal_type
+
+    try:
+        manager.ensure_config_mutable(name)
+    except RuntimeError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    try:
+        store.update_signal_details(
+            name,
+            assembly_id,
+            signal_name,
+            new_name=resolved_name,
+            offset=str(resolved_offset),
+            signal_type=resolved_type,
+        )
+    except ConfigurationError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    console.print(f"[green]Signal '{signal_name}' updated in assembly {assembly_id}.[/green]")
+
+
+@signals.command("add")
+@click.argument("name")
+@click.argument("assembly_id", type=int)
+@click.option("--new-name", required=True, help="Name of the new signal.")
+@click.option("--offset", required=True, help="Bit offset for the signal.")
+@click.option(
+    "--type",
+    "signal_type",
+    required=True,
+    type=click.Choice(CIP_SIGNAL_TYPES, case_sensitive=False),
+    help="Signal data type.",
+)
+@click.option(
+    "--position",
+    type=click.Choice(["after", "before", "end", "start"], case_sensitive=False),
+    default="after",
+    show_default=True,
+    help="Insertion point relative to --relative.",
+)
+@click.option(
+    "--relative",
+    help="Existing signal name used as the insertion reference.",
+)
+@click.pass_obj
+def add_signal(
+    obj: Dict[str, Any],
+    name: str,
+    assembly_id: int,
+    new_name: str,
+    offset: str,
+    signal_type: str,
+    position: str,
+    relative: Optional[str],
+) -> None:
+    """Add a signal to an assembly."""
+
+    store = _get_store(obj)
+    manager = _get_manager(obj)
+    try:
+        manager.ensure_config_mutable(name)
+    except RuntimeError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    try:
+        store.add_signal(
+            name,
+            assembly_id,
+            new_name=new_name,
+            offset=offset,
+            signal_type=signal_type,
+            position=position,
+            relative_signal=relative,
+        )
+    except (ConfigurationNotFoundError, ConfigurationError) as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    console.print(
+        f"[green]Signal '{new_name}' added to assembly {assembly_id} in '{name}'.[/green]"
+    )
+
+
+@signals.command("remove")
+@click.argument("name")
+@click.argument("assembly_id", type=int)
+@click.argument("signal_name")
+@click.pass_obj
+def remove_signal(obj: Dict[str, Any], name: str, assembly_id: int, signal_name: str) -> None:
+    """Remove a signal from an assembly."""
+
+    store = _get_store(obj)
+    manager = _get_manager(obj)
+    try:
+        manager.ensure_config_mutable(name)
+    except RuntimeError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    try:
+        store.remove_signal(name, assembly_id, signal_name)
+    except (ConfigurationNotFoundError, ConfigurationError) as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    console.print(
+        f"[green]Signal '{signal_name}' removed from assembly {assembly_id} in '{name}'.[/green]"
+    )
+
+
+@configs.command("start")
+@click.argument("name")
+@click.option(
+    "--simulate-handshake",
+    is_flag=True,
+    help="Skip live network activity and simulate the handshake steps.",
+)
+@click.option(
+    "--no-runtime",
+    is_flag=True,
+    help="Perform the handshake but do not start the runtime even if configured for live mode.",
+)
+@click.option(
+    "--duration",
+    type=float,
+    help="Automatically stop the runtime after the specified number of seconds.",
+)
+@click.option(
+    "--cycle-interval",
+    type=float,
+    default=0.1,
+    show_default=True,
+    help="Loop interval for cyclic updates when running in live mode.",
+)
+@click.pass_obj
+def start_configuration(
+    obj: Dict[str, Any],
+    name: str,
+    simulate_handshake: bool,
+    no_runtime: bool,
+    duration: Optional[float],
+    cycle_interval: float,
+) -> None:
+    """Perform the configured handshake and optionally run the simulator runtime."""
+
+    store = _get_store(obj)
+    try:
+        config = store.get(name)
+    except ConfigurationNotFoundError as exc:
+        raise click.ClickException(f"Configuration '{name}' not found") from exc
+
+    manager = SimulatorManager(cycle_interval=cycle_interval)
+    obj["manager"] = manager
+
+    simulate_value = True if simulate_handshake else None
+    try:
+        handshake = manager.start(config, store, simulate_handshake=simulate_value)
+    except RuntimeError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    _render_handshake(handshake)
+
+    if not handshake.success:
+        manager.stop()
+        raise click.ClickException(_format_handshake_failure(handshake))
+
+    active = manager.active()
+    runtime = active.runtime if active else None
+
+    if runtime is None or no_runtime:
+        if runtime is not None and no_runtime:
+            console.print("[yellow]Runtime startup suppressed by --no-runtime.[/yellow]")
+        manager.stop()
+        console.print(f"[green]Handshake complete for '{name}'.[/green]")
+        return
+
+    if duration is not None and duration <= 0:
+        manager.stop()
+        raise click.ClickException("Duration must be greater than zero seconds.")
+
+    console.print(
+        f"[green]Runtime active for '{name}'. Press CTRL+C to stop." + (
+            "" if duration is None else f" Auto-stop after {duration:.2f}s."
+        )
+    )
+
+    start_time = time.monotonic()
+    try:
+        while True:
+            if duration is not None and (time.monotonic() - start_time) >= duration:
+                console.print("[yellow]Runtime duration reached; stopping...[/yellow]")
+                break
+            time.sleep(0.5)
+    except KeyboardInterrupt:
+        console.print("[yellow]Stopping runtime...[/yellow]")
+    finally:
+        manager.stop()
+        console.print(f"[green]Runtime for '{name}' stopped.[/green]")
 
 
 @cli.command()
