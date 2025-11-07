@@ -431,7 +431,6 @@ class SimulatorConfiguration:
     allowed_hosts: Tuple[str, ...] = field(default_factory=tuple)
     allow_external: bool = False
     assemblies: List[AssemblyDefinition] = field(default_factory=list)
-    role: str = "originator"
     listener_host: str = "0.0.0.0"
     listener_port: int = 44818
     listener_interface: Optional[str] = None
