@@ -20,7 +20,11 @@ from rich.tree import Tree
 
 from .config_store import ConfigurationNotFoundError, ConfigurationStore
 from .configuration import (
+    CIP_SIGNAL_TYPES,
     ConfigurationError,
+    RUNTIME_MODES,
+    SIMULATOR_ROLES,
+    TRANSPORT_MODES,
     SimulatorConfiguration,
     normalize_role,
     normalize_transport_mode,
