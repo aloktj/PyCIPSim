@@ -76,6 +76,25 @@ pip install -e .[dev]
 pip install -e .[pycomm3]
 ```
 
+### WSL/Linux one-liner
+
+If you're using Windows Subsystem for Linux (WSL) or a standard Linux distro, the bundled setup script will create a virtual
+environment, install dependencies, run smoke checks, and optionally launch the web UI:
+
+```bash
+bash scripts/setup_wsl.sh              # default setup + tests
+bash scripts/setup_wsl.sh --skip-tests # skip pytest
+bash scripts/setup_wsl.sh --start-web --port 8000
+```
+
+Flags:
+- `--with-pycomm3` installs the optional hardware extras.
+- `--skip-tests` avoids running the pytest suite (useful on slow VMs).
+- `--start-web` starts `pycipsim web` after installation; pair with `--port` to pick a port.
+
+The script expects Python 3.10+ with `python3-venv` available (installable via `sudo apt-get install python3 python3-venv`).
+It auto-detects WSL and works on regular Linux distributions as well.
+
 ### Running the CLI
 
 1. Generate a scenario template:
