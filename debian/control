@@ -1,0 +1,26 @@
+Source: pycipsim
+Section: python
+Priority: optional
+Maintainer: PyCIPSim Contributors <devnull@example.com>
+Build-Depends: debhelper-compat (= 13),
+ dh-python,
+ python3-all,
+ python3-setuptools,
+ python3-wheel
+Standards-Version: 4.6.2
+Rules-Requires-Root: no
+Homepage: https://example.com/pycipsim
+
+Package: python3-pycipsim
+Architecture: all
+Depends: ${python3:Depends}, ${misc:Depends},
+ python3-click,
+ python3-rich,
+ python3-fastapi,
+ python3-jinja2,
+ python3-multipart,
+ python3-httpx,
+ python3-uvicorn
+Description: Simulation toolkit for CIP/Ethernet-IP scenarios
+ PyCIPSim provides a Python-based simulation toolkit for
+ CIP/Ethernet-IP scenarios, including a CLI and web interface.

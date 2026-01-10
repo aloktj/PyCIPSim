@@ -1,0 +1,5 @@
+pycipsim (0.1.0-1) unstable; urgency=medium
+
+  * Initial Debian packaging.
+
+ -- PyCIPSim Contributors <devnull@example.com>  Thu, 01 Jan 1970 00:00:00 +0000
